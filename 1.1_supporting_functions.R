@@ -1,6 +1,25 @@
+#' db_copy_and_subset
+#' 
 #' This function copies the 'csv' and imports into the PostgreSQL database
 #' Only imports a subset to reduce overall size of database
-#' Originally developed in 2019-12-04 Load Database 3
+#' Originally developed in 2018-12-04 Load Database 3
+#' 
+#' @param file CSV file to be added to the combined database
+#' @param oshpd_folder 
+#' @param destination Name of table in PostgreSQL database to which the CSV file
+#' will be added
+#' @param unified_col_order Vector with the names of column. Use to specify the 
+#' order that columns should appear, (e.g. important when different years have a
+#' different column order). Can also be used to select a subset of columns.
+#' Default='*' (e.g. select all in order present)
+#' @param subset_command A command for subsetting the data before insertion into 
+#' the destination table. Default='agyradm<27'
+#' @param diagnostic. Print before/after numbers. Default=TRUE
+#' @examples 
+#' suppress = dbExecute(con, paste("CREATE TABLE pdd_peds (",pdd_2011_col_types,")"))
+#' db_copy_and_subset('Marcin_pdd2011.csv', oshpd_folder,
+#'                   pdd_2011_col_types,'pdd_peds',
+#'                   subset_command = "agyradm<22")
 db_copy_and_subset = function(file, oshpd_folder, 
                               column_designations,
                               destination_table = 'pdd_peds',
@@ -47,9 +66,10 @@ db_copy_and_subset = function(file, oshpd_folder,
 }
 
 
-#' Developed in Normalize #2
+#' db_recode
+#' 
 #' Recode a variable in PostgreSQL, similar to dplyr::recode
-
+#' Developed in Normalize #2 (2018-12-11 RenameVars_RecodeVars2)
 db_recode = function(table, column, code_map){
   table_col = paste0(table,'.',column)
   dbWriteTable(con, 'temp_table', code_map)
@@ -61,8 +81,10 @@ db_recode = function(table, column, code_map){
   return(out)
 }
 
-#' Developed in Normalize #2
+#' db_compare_two_cols
+#' 
 #' Can be used to compare recoded variables
+#' Developed in Normalize #2 (2018-12-11 RenameVars_RecodeVars2)
 db_compare_two_cols = function(table, col1, col2){
   res = dbGetQuery(
     con, paste("SELECT",col1,", count(",col1,") FROM ",table," GROUP BY", col1))
@@ -70,15 +92,43 @@ db_compare_two_cols = function(table, col1, col2){
     con, paste("SELECT",col2,", count(",col2,") FROM ",table," GROUP BY", col2))
   cbind(arrange(res,count),arrange(res2, count)) %>% print() 
 }
+
+#' list_to_df
+#' 
+#' Simple wrapper function to convert a list to a data.frame with the columns
+#' 'From' and 'To'. Use with db_recode.
+#' 
+#' @example 
+#' \dontrun{
+#'   suppress_out = db_recode('subset_pdd_peds', 'admtday',
+#' code_map=list(
+#'   `1` = 'Sun',
+#'   `2` = 'Mon', 
+#'   `3` = 'Tue', 
+#'   `4` = 'Wed', 
+#'   `5` = 'Thu',
+#'   `6` = 'Fri',
+#'   `7` = 'Sat'
+#' ) %>% list_to_df()
+#' }
+#' 
+#' Developed in Normalize #2 (2018-12-11 RenameVars_RecodeVars2)
 list_to_df = function(list_){
   plyr::ldply(list_,data.frame) %>% `colnames<-`(c("from", "to"))
 }
 
+#' recode_add_PDD_subset
+#' 
 #' Recodes certains columns in the PD dataset
 #' Inserts in prescribed order into the combined table
 #' Adds columns that are present in the ED data set
 #' Developed 2018/12/19 RenameVars Recode Vars #3
-
+#' @examples 
+#' print('--2016--')
+#' # create a subset of data
+#' dbExecute(con, "SELECT * INTO subset_pdd_peds FROM pdd_peds WHERE dsch_yr=2016") 
+#' # insert into combined data table
+#' recode_add_PDD_subset()
 recode_add_PDD_subset <- function(){
   start.time = Sys.time()
   # add columns
@@ -186,11 +236,12 @@ recode_add_PDD_subset <- function(){
 }
 
 
+#' recode_add_EDD_subset
+#' 
 #' Recodes certains columns in the ED dataset
 #' Inserts in prescribed order into the combined table
 #' Adds columns that are present in the PD data set
 #' Developed 2018/12/19 RenameVars Recode Vars #3
-
 recode_add_EDD_subset <- function(){
   start.time = Sys.time()
   # add columns

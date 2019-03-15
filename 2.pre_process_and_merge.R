@@ -10,7 +10,7 @@
 
 # Import libraries
 library(RPostgres) #database
-library(tidyverse) # includes 
+library(tidyverse) # includes
 library(feather)
 # dplyr(data munging), ggplot2 (plotting), tidyr (tidy data)
 # library(dplyr) # data munging
@@ -31,10 +31,10 @@ urban_classif = read.csv(urban_classif, header=TRUE, fileEncoding="UTF-8-BOM")
 county_map = file.path(getwd(),'data_dropbox', '2019.02.14_county.csv')
 county_map = read.csv(county_map, header=TRUE, fileEncoding="UTF-8-BOM")
 # icd 9 cm -> 18 groups
-ccs_multi_dx_tool = file.path('data_symlink', 'hcup_ahrq_ccs', 'Multi_Level_CCS_2015', 'ccs_multi_dx_tool_2015.csv')
+ccs_multi_dx_tool = file.path('data_dropbox', 'hcup_ahrq_ccs', 'Multi_Level_CCS_2015', 'ccs_multi_dx_tool_2015.csv')
 ccs_multi_dx_tool = read.csv(ccs_multi_dx_tool, header=TRUE)
 
-hospitals = read.csv('local_data/2018.05.21_hospital_id_map.csv', 
+hospitals = read.csv('data_dropbox/2018.05.21_hospital_id_map.csv', 
                      header=TRUE, row.names=1)
 
 
@@ -264,7 +264,7 @@ hosp_factors = utilization %>%
          EMS_AMB_DIVERS, HEALTH_SVC_AREA) %>% filter(!is.na(OSHPD_ID)) %>% 
   mutate(OSHPD_ID = OSHPD_ID %>% as.character() %>% as.integer()) %>%
   # get rid of excess categories in factor variables
-  mutate_if(is.factor,funs(as.factor(as.character(.)))) %>%
+  mutate_if(is.factor,~as.factor(as.character(.))) %>%
   mutate(PED_BED_LIC = as.integer(as.character(PED_BED_LIC)),
          NICU_BED_LIC = as.integer(as.character(NICU_BED_LIC)),
          PSY_BED_LIC = as.integer(as.character(PSY_BED_LIC)),
