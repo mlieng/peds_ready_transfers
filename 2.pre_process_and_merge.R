@@ -23,13 +23,13 @@ linked_pilot = read.csv('local_data/2018.05.22_linked_pilot.csv',
                         header=TRUE, row.names=1)
 utilization = file.path('data_dropbox','oshpd_utilization',
                         '2012_final_data_set_Hosp12_util_data_FINAL.csv')
-utilization = read.csv(utilization, header=TRUE)
+utilization = read.csv(utilization, header=TRUE, fileEncoding="UTF-8-BOM")
 urban_classif = file.path(getwd(),'data_dropbox','cdc',
-                          'NCHSURCodes2013.xlsx')
-urban_classif = read.xls(urban_classif, header=TRUE)
+                          'NCHSURCodes2013.csv')
+urban_classif = read.csv(urban_classif, header=TRUE, fileEncoding="UTF-8-BOM")
 # county # -> county name
-county_map = file.path(getwd(),'data_symlink', '2019.02.14_county.csv')
-county_map = read.csv(county_map, header=TRUE)
+county_map = file.path(getwd(),'data_dropbox', '2019.02.14_county.csv')
+county_map = read.csv(county_map, header=TRUE, fileEncoding="UTF-8-BOM")
 # icd 9 cm -> 18 groups
 ccs_multi_dx_tool = file.path('data_symlink', 'hcup_ahrq_ccs', 'Multi_Level_CCS_2015', 'ccs_multi_dx_tool_2015.csv')
 ccs_multi_dx_tool = read.csv(ccs_multi_dx_tool, header=TRUE)

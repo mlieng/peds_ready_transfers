@@ -18,22 +18,14 @@ oshpd_folder = file.path(getwd(),'local_data','oshpd_full_data')
 
 pdd_col_order = read.csv(
   file.path(oshpd_folder,'2018-12-07_pdd_column_order_and_types.csv'),
-  header = TRUE, stringsAsFactors = FALSE)
+  header = TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
 edd_col_order = read.csv(
   file.path(oshpd_folder,'2018-12-07_edd_column_order_and_types.csv'),
-  header = TRUE, stringsAsFactors = FALSE)
+  header = TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
 combined_peds_cols = read.csv(
   file.path(oshpd_folder,'2018-12-19_combined_table_designations.csv'), 
-  header=TRUE, stringsAsFactors = FALSE)
+  header=TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
 
-# hack - need to rename since '2011' gets read as 'i..2011'
-colnames(pdd_col_order) = c("X2011", "X2011_types", "X2016", "X2016_types")
-colnames(edd_col_order) = c(
-  "X2011", "X2011_types", "X2015", "X2015_types","X2016", "X2016_types"
-)
-colnames(combined_peds_cols) = c(
-  "name", "designation", "sql_command"
-)
 
 #
 # Connect to database----
