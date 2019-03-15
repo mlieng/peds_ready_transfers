@@ -78,6 +78,27 @@ command = paste0("copy temp_table FROM '",
 if(diagnostic) print(command)
 dbExecute(con, command)
 
+#################_-------------------------------------------------------
 
+# these are the same
+pdd_col_order = read.csv(
+  file.path(oshpd_folder,'2018-12-07_pdd_column_order_and_types.csv'),
+  header = TRUE, stringsAsFactors = FALSE)
 
+pdd_col_order = read.csv(
+  'local_data/oshpd_full_data/2018-12-07_pdd_column_order_and_types.csv',
+  header = TRUE, stringsAsFactors = FALSE)
+
+############- dev copy of a table
+
+# test copy of a table
+#dbExecute(con, "CREATE TABLE temp_table AS TABLE sample_pdd_peds WHERE age<2")
+dbExecute(con, "SELECT * INTO temp_table FROM sample_pdd_peds WHERE dsch_yr=2011") 
+tbl(con, 'temp_table') %>% select(oshpd_id, dsch_yr)
+dbExecute(con, "DROP TABLE temp_table")
+
+#' 
+#' ## Make A Copy of PDD Data and Check Lengths
+
+#' It took 13.05574 mins to finish altering the large table. Recall that there are 5,073,310 records `pdd_peds` and there are 20,760,339 records in `edd_peds`.
 
