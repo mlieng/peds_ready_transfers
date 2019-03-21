@@ -21,9 +21,15 @@ oshpd_folder = file.path(getwd(),'local_data','oshpd_full_data')
 
 linked_pilot = read.csv('local_data/2018.05.22_linked_pilot.csv', 
                         header=TRUE, row.names=1)
-utilization = file.path('data_dropbox','oshpd_utilization',
-                        '2012_final_data_set_Hosp12_util_data_FINAL.csv')
-utilization = read.csv(utilization, header=TRUE, fileEncoding="UTF-8-BOM")
+# utilization = file.path('data_dropbox','oshpd_utilization',
+#                         '2012_final_data_set_Hosp12_util_data_FINAL.csv')
+# utilization = read.csv(utilization, header=TRUE, fileEncoding="UTF-8-BOM")
+utilization = read.csv(file.path(
+  'data_dropbox','oshpd_utilization',                             
+  '2012_final_data_set_Hosp12_util_data_FINAL_sections1-7_combined.csv'),
+  header = TRUE,  fileEncoding = 'UTF-8-BOM'
+)
+
 urban_classif = file.path(getwd(),'data_dropbox','cdc',
                           'NCHSURCodes2013.csv')
 urban_classif = read.csv(urban_classif, header=TRUE, fileEncoding="UTF-8-BOM")
@@ -33,9 +39,21 @@ county_map = read.csv(county_map, header=TRUE, fileEncoding="UTF-8-BOM")
 # icd 9 cm -> 18 groups
 ccs_multi_dx_tool = file.path('data_dropbox', 'hcup_ahrq_ccs', 'Multi_Level_CCS_2015', 'ccs_multi_dx_tool_2015.csv')
 ccs_multi_dx_tool = read.csv(ccs_multi_dx_tool, header=TRUE)
+pecarn_illness_severity = read.csv(
+  'data_dropbox/PECARN_DGS_severity/PECARN_ICD9_MASTER_to_illness_severity.csv')
+census.income = read.csv('data_dropbox/census_ACS/s1903_income/ACS_12_5YR_S1903_with_ann.csv')
+census.edu = read.csv('data_dropbox/census_ACS/s1501_education/ACS_12_5YR_S1501_with_ann.csv')
+
 
 hospitals = read.csv('data_dropbox/2018.05.21_hospital_id_map.csv', 
                      header=TRUE, row.names=1)
+
+cha_childrens = read.csv('data_dropbox/california_childrens_hospitals/california_childrens_hospitals.csv')
+
+cha_childrens = read.csv(file.path(
+  'data_dropbox', 'california_childrens_hospitals',
+  'california_childrens_hospitals.csv'),
+  header = TRUE)
 
 
 #
@@ -249,22 +267,174 @@ data_ = urban_classif_reduced %>%
 
 
 #
-# __Subset OSHPD Hospital Utilization Variables----
+# __PECARN Illness Severity (Based on ICD9) (Alessandrini et al. 2012)----
+#
+
+illness_severity = pecarn_illness_severity %>% mutate(
+  dx_prin = ICD9_Code %>% as.character(),
+  sev.score = Severity_Score,
+  # create variable where "other categories" -> NA (missing)
+  sev.score2 = recode(
+    Severity_Score,
+    "1" = '1',
+    "2" = '2',
+    "3" = '3', 
+    "4" = '4',
+    "5" = '5',
+    "Invalid: Additional digit required" = NA_character_,
+    "Not Categorized" = NA_character_,
+    "No code entered" = NA_character_
+  ) %>% as.numeric(),
+  sev.major_group = Major_Group_Desc,
+  sev.subgroup = Subgroup_Desc
+) %>% select(dx_prin, sev.score, sev.score2, sev.major_group, sev.subgroup)
+
+# join with data
+data_ = left_join(data_, illness_severity, by='dx_prin')
+
+
+#
+# __Complex Chronic Conditions (Feudtner et al. 2014)
+#
+
+# Note: When doing PAT will need to use the four different categories and combine together
+
+data_ = data_ %>% mutate(
+  ccc_label = convert_icd9dx_TO_ccc(dx_prin),
+  has_ccc = !is.na(ccc_label)
+)
+
+
+
+#
+# __Census Data (American FactFinder)
+#
+
+# Income Data
+
+
+# set 1st row as labels and delete
+census.income.labels = census.income[1,] %>% mutate_all(as.character)
+Hmisc::label(census.income) = census.income.labels
+census.income = census.income %>% slice(2:nrow(census.income))
+
+census.income.subset = census.income %>% 
+  select(GEO.id2,HC02_EST_VC02) %>%
+  # rename to human readable
+  rename(
+    census.zcta = GEO.id2,
+    census.med.income = HC02_EST_VC02)  %>% 
+  mutate(
+    census.zcta = census.zcta %>% as.character %>% as.numeric,
+    census.med.income = census.med.income %>% 
+      as.character() %>% 
+      str_replace_all(
+        c('2,500-' = '2500',
+          '250,000\\+' = '250000', 
+          '-' = NA_character_ )) %>%  
+      as.numeric()
+  ) 
+
+#
+# Education Data
+#
+
+
+
+# set 1st row as labels and delete
+census.edu.labels = census.edu[1,] %>% mutate_all(as.character)
+Hmisc::label(census.edu) = census.edu.labels
+census.edu = census.edu %>% slice(2:nrow(census.edu))
+
+# subset and rename
+census.edu.subset = census.edu %>% 
+  select(GEO.id2, HC01_EST_VC16, HC01_EST_VC17) %>%
+  # rename to human-human readable
+  rename(
+    census.zcta=GEO.id2, 
+    census.hs_higher=HC01_EST_VC16,
+    census.bach_higher=HC01_EST_VC17
+  ) %>%
+  mutate(
+    census.hs_higher = replace(census.hs_higher, census.hs_higher=='-', NA),
+    census.bach_higher = replace(census.bach_higher, census.bach_higher=='-', NA)
+  ) %>% 
+  # convert all to numeric
+  mutate_if(is.factor, ~as.numeric(as.character(.)))
+
+census.data = full_join(census.income.subset, census.edu.subset, by='census.zcta') %>% 
+  filter(!is.na(census.zcta)) %>% mutate(pat_zip = as.character(census.zcta))
+
+data_ = left_join(data_, census.data, by='pat_zip')
+
+# Remove extra data sets
+remove(list=c('census.income', 'census.income.labels', 'census.income.subset',
+              'census.edu', 'census.edu.labels', 'census.edu.subset'))
+
+
+
+#
+# __NCHS Urban Rural Scheme
+#
+
+NCHS_urban_rural_scheme = c(
+  'Large central metro', 'Large fringe metro', 'Medium metro',
+  'Small metro','Micropolitan','Noncore')
+
+urban_classif_reduced = urban_classif %>% filter(State.Abr.=='CA') %>%
+  mutate(county = County.name %>% str_replace_all(" County", ""),
+         fac_county.name = county,
+         pat_county.name = county,
+         urban_rural.int = X2013.code,
+         urban_rural.factor = factor(X2013.code, levels=c(1,2,3,4,5,6),
+                                     labels=NCHS_urban_rural_scheme),
+         nchs.fac_urban_rural = urban_rural.factor,
+         nchs.fac_urban_rural.int = urban_rural.int,
+         nchs.pat_urban_rural = urban_rural.factor,
+         nchs.pat_urban_rural.int = urban_rural.int,
+         urban_rural.char = recode(X2013.code,
+                                   `1` = 'Large central metro', `2` = 'Large fringe metro',
+                                   `3` = 'Medium metro', `4` = 'Small metro',
+                                   `5` = 'Micropolitan', `6` =  'Noncore')
+  ) 
+
+# recode OSHPD data from numbers to county names (e.g. 58 -> Yuba)
+county_map = county_map %>% mutate(
+  County = County %>% as.character() %>% trim(),
+  fac_county = pat_county,
+  pat_county.name = County,
+  fac_county.name = County
+)
+
+# add county names for patient
+data_ = county_map %>% select(pat_county, pat_county.name) %>% 
+  left_join(data_, ., by='pat_county')
+
+# add rurality
+data_ = urban_classif_reduced %>% 
+  select(pat_county.name, nchs.pat_urban_rural, nchs.pat_urban_rural.int) %>% 
+  left_join(data_, ., by='pat_county.name')
+
+#
+# -Hospital Data----
+#
+
+#
+# __OSHPD Hospital Utilization----
 #
 
 # edited from 2018-11-12_Transfer RFS
-# choose subset of variables to explore
 hosp_factors = utilization %>% 
   slice(4:length(utilization$OSHPD_ID)) %>% 
   select(OSHPD_ID, FAC_NAME, COUNTY, FACILITY_LEVEL, 
-         TYPE_CNTRL, TYPE_SVC_PRINCIPAL, ED_LIC_LEVL_BEGIN,
+         TYPE_CNTRL, TYPE_SVC_PRINCIPAL, ED_LIC_LEVL_END,
          TEACH_HOSP, PED_BED_LIC, NICU_BED_LIC, PSY_BED_LIC,
          # TRAUMA_CTR,  is the same as EMSA_TRAUMA_CTR_DESIG+EMSA TRAUMA PEDS
          EMSA_TRAUMA_CTR_DESIG, EMSA_TRAUMA_PEDS_CTR_DESIG, #starts_with('ED_'),
          EMS_AMB_DIVERS, HEALTH_SVC_AREA) %>% filter(!is.na(OSHPD_ID)) %>% 
   mutate(OSHPD_ID = OSHPD_ID %>% as.character() %>% as.integer()) %>%
   # get rid of excess categories in factor variables
-  mutate_if(is.factor,~as.factor(as.character(.))) %>%
+  mutate_if(is.factor, ~as.factor(as.character(.))) %>%
   mutate(PED_BED_LIC = as.integer(as.character(PED_BED_LIC)),
          NICU_BED_LIC = as.integer(as.character(NICU_BED_LIC)),
          PSY_BED_LIC = as.integer(as.character(PSY_BED_LIC)),
@@ -273,34 +443,51 @@ hosp_factors = utilization %>%
          has_psy_bed_lic = PSY_BED_LIC>0,
          trauma_ctr = EMSA_TRAUMA_CTR_DESIG != 0,
          peds_trauma_ctr = EMSA_TRAUMA_PEDS_CTR_DESIG !=0,
-         oshpd_id = OSHPD_ID %>% substring(4) %>% as.integer(),
+         # remove first 3 nubmers in OSHPD_ID (e.g. '106')
+         OSHPD_ID = OSHPD_ID %>% substring(4) %>% as.integer(),
          
          # replace 0 with NA
          EMSA_TRAUMA_CTR_DESIG2 = replace(
            EMSA_TRAUMA_CTR_DESIG, EMSA_TRAUMA_CTR_DESIG==0, NA),
          EMSA_TRAUMA_PEDS_CTR_DESIG2 = replace(
            EMSA_TRAUMA_PEDS_CTR_DESIG, EMSA_TRAUMA_PEDS_CTR_DESIG==0, NA),
-         ED_LIC_LEVL_BEGIN2 = replace(
-           ED_LIC_LEVL_BEGIN, ED_LIC_LEVL_BEGIN==0, NA),
-         peds_trauma = EMSA_TRAUMA_PEDS_CTR_DESIG
-  )
-# hosp_factors$EMSA_TRAUMA_CTR_DESIG[hosp_factors$EMSA_TRAUMA_CTR_DESIG==0] = NA
-# hosp_factors$EMSA_TRAUMA_PEDS_CTR_DESIG[hosp_factors$EMSA_TRAUMA_PEDS_CTR_DESIG==0] = NA
-# hosp_factors$ED_LIC_LEVL_BEGIN[hosp_factors$ED_LIC_LEVL_BEGIN==0] = NA
-# Standby < Basic < Comprehensive, set basic as reference since most common
-hosp_factors$ed_level = hosp_factors$ED_LIC_LEVL_BEGIN2 %>% factor(
-  levels=c('Basic', 'Standby', 'Comprehensive'))
-hosp_factors = hosp_factors %>% select(-OSHPD_ID) %>% 
+         ED_LIC_LEVL_END2 = replace(
+           ED_LIC_LEVL_END, ED_LIC_LEVL_END==0, NA) %>% 
+           # Standby < Basic < Comprehensive, set basic as reference since most common
+           factor(levels=c('Basic', 'Standby', 'Comprehensive')),
+         
+         # correct spelling miscategorizations                   
+         # TEACH_HOSP2 = TEACH_HOSP %>% recode(YES = 'YES', NO = 'NO', No = 'NO'),
+         TEACH_HOSP = TEACH_HOSP %>% recode(YES = TRUE, NO = FALSE, No = FALSE),
+         
+         # change type for merge with rural-urban designations
+         COUNTY = as.character(COUNTY)
+  ) %>% 
   # put 'hf.' as prefix to variables, make lower case
   setNames(paste0('hf.', names(.) %>% str_to_lower())) %>% 
   # put 'oshpd_id' first and then rest of variables
   rename(oshpd_id = hf.oshpd_id) %>% select(oshpd_id, everything())
-# join with dataset 
-data_ = left_join(data_, hosp_factors, by='oshpd_id')
-
 
 #
-# __ link Peds Ready data----
+# __Other hospital designations
+#
+
+# Add Children's Hospital Association - Affiliation/Designation
+# remove '106' prefix from OSHPD_ID
+childrens_hospitals = cha_childrens$oshpd_id %>% substring(4) %>% as.integer()
+
+hosp_factors = hosp_factors %>% mutate(
+  cha.childrens_hosp = oshpd_id %in% childrens_hospitals
+)
+
+# Add rurality
+hosp_factors = urban_classif_reduced %>% 
+  select(fac_county.name, nchs.fac_urban_rural, nchs.fac_urban_rural.int) %>% 
+  rename(hf.county = fac_county.name) %>% 
+  left_join(hosp_factors, ., by='hf.county')
+
+#
+# __ Link Peds Ready data----
 #
 
 # edited from 2018-11-12_Transfer RFS
@@ -322,6 +509,7 @@ linked_pilot_reduced = linked_pilot %>% select(
       factor(levels=c('Yes','No','Unknown')),
     guidelines.filled = recode(guidelines, Y='Yes',N='No', .default="Unknown") %>% 
       factor(levels=c('Yes','No','Unknown')),
+    Score10 = Score/10,
     Score_quintiles = case_when(
       Score<20~"0-20",
       Score>=20 & Score<40 ~ "20-40",
@@ -346,5 +534,5 @@ data_ = left_join(data_, linked_pilot_reduced, by='oshpd_id')
 # subset to hospitals with peds-ready data
 data_$pr.responded = !is.na(data_$pr.Score)
 data_ = data_ %>% filter(pr.responded)
-write_feather(data_, '2012-02-25_2012_all_peds.feather')
+write_feather(data_, 'local_transfers_dev/2012-02-25_2012_all_peds.feather')
 
