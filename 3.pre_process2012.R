@@ -1,4 +1,5 @@
-# Goal: Extract 2011 individual data to create hospital-level data
+# Goal: Extract 2012 individual data, similar to `2.pre-process_and_merge`
+# except it doesn't include derivation of hospital-level data
 
 #
 # Set-up ----
@@ -13,28 +14,13 @@ library(lubridate) # for managing dates
 
 # Parameters
 odx_max = 10
-run_injury_sev = FALSE
+run_injury_sev = TRUE
 
 # Custom functions
 source('custom_functions/2.complex_chronic_conditions.R')
 
 # Import files
 oshpd_folder = file.path(getwd(),'local_data','oshpd_full_data')
-
-# utilization = file.path('data_dropbox','oshpd_utilization',
-#                         '2012_final_data_set_Hosp12_util_data_FINAL.csv')
-# utilization = read.csv(utilization, header=TRUE, fileEncoding="UTF-8-BOM")
-utilization = read.csv(file.path(
-  'data_dropbox','oshpd_utilization',                             
-  '2011_final_data_set_Hosp11_util_data_FINAL_sections1-4_combined.csv'),
-  header = TRUE,  fileEncoding = 'UTF-8-BOM'
-  )
-
-financial = read.csv(file.path(
-  'data_dropbox','oshpd_quarterly_financial',                             
-  '2011_Q4_R4_CSV.csv'),
-  header = TRUE,  fileEncoding = 'UTF-8-BOM'
-  )
 
 
 urban_classif = file.path(getwd(),'data_dropbox','cdc',
@@ -50,33 +36,8 @@ ccs_multi_dx_tool = read.csv(ccs_multi_dx_tool, header=TRUE)
 pecarn_illness_severity = read.csv(
   'data_dropbox/PECARN_DGS_severity/PECARN_ICD9_MASTER_to_illness_severity.csv')
 
-
-
-peds_ready_pilot = read.csv(
-  file.path('local_data','peds_ready',
-    '2012_CA_PediatricReadinessPilotData.csv'), 
-    header=TRUE)
-# pr_to_oshpd_id = read.csv('data_dropbox/2018.05.21_hospital_id_map.csv', 
-#                      header=TRUE, row.names=1)
-
-pr_to_oshpd_id = read.csv(
-  file.path('local_data',
-    '2019-05-10_pedsready_oshpd_linkage2011.csv'), 
-    header=TRUE)
-cah_data = read.csv('data_dropbox/critical_access_hospitals/critical_access_hospitals.csv', 
-                    header=TRUE, allowEscapes = TRUE) 
-# cha_childrens = read.csv('data_dropbox/california_childrens_hospitals/california_childrens_hospitals.csv')
-# 
-# cha_childrens = read.csv(file.path(
-#   'data_dropbox', 'california_childrens_hospitals',
-#   'california_childrens_hospitals.csv'),
-#   header = TRUE)
-
 census.income = read.csv('data_dropbox/census_ACS/s1903_income/ACS_11_5YR_S1903_with_ann.csv')
 census.edu = read.csv('data_dropbox/census_ACS/s1501_education/ACS_11_5YR_S1501_with_ann.csv')
-
-# census.income = read.csv('data_dropbox/census_ACS/s1903_income/ACS_12_5YR_S1903_with_ann.csv')
-# census.edu = read.csv('data_dropbox/census_ACS/s1501_education/ACS_12_5YR_S1501_with_ann.csv')
 
 
 #
@@ -101,7 +62,7 @@ start.time = Sys.time()
 # pull from SQL database
 encounters = combined_peds %>% 
   # filter, only choose individuals less than 18
-  filter(start_year==2011 & age<18) %>% 
+  filter(start_year==2012 & age<18) %>% 
   select(id, database, rln, birthdate, age, age_days, pat_zip, pat_county, sex,
          race_group, lang_spoken, start_date, end_date, start_day_of_week, 
          start_month, start_quarter, start_year, end_year, oshpd_id, 
@@ -614,359 +575,8 @@ data_ = urban_classif_reduced %>%
 
 
 
-#
-# -Hospital Data: Post-process----
-#
-
-#
-# __OSHPD Hospital Utilization----
-#
-
-
-# edited from 2018-11-12_Transfer RFS
-hosp_factors = utilization %>% 
-  slice(4:length(utilization$OSHPD_ID)) %>% 
-  select(OSHPD_ID, FAC_NAME, COUNTY, FACILITY_LEVEL, 
-         TYPE_CNTRL, TYPE_SVC_PRINCIPAL, ED_LIC_LEVL_END,
-         TEACH_HOSP, PED_BED_LIC, NICU_BED_LIC, PSY_BED_LIC,
-         # TRAUMA_CTR,  is the same as EMSA_TRAUMA_CTR_DESIG+EMSA TRAUMA PEDS
-         EMSA_TRAUMA_CTR_DESIG, EMSA_TRAUMA_PEDS_CTR_DESIG, #starts_with('ED_'),
-         EMS_AMB_DIVERS, HEALTH_SVC_AREA,
-         LONGITUDE, LATITUDE
-         ) %>% filter(!is.na(OSHPD_ID)) %>% 
-  mutate(OSHPD_ID = OSHPD_ID %>% as.character() %>% as.integer()) %>%
-  # get rid of excess categories in factor variables
-  mutate_if(is.factor, ~as.factor(as.character(.))) %>%
-  mutate(PED_BED_LIC = as.integer(as.character(PED_BED_LIC)),
-         NICU_BED_LIC = as.integer(as.character(NICU_BED_LIC)),
-         PSY_BED_LIC = as.integer(as.character(PSY_BED_LIC)),
-         has_ped_bed_lic = PED_BED_LIC>0,
-         has_nicu_bed_lic = NICU_BED_LIC>0,
-         has_psy_bed_lic = PSY_BED_LIC>0,
-         trauma_ctr = EMSA_TRAUMA_CTR_DESIG != 0,
-         peds_trauma_ctr = EMSA_TRAUMA_PEDS_CTR_DESIG !=0,
-         # remove first 3 nubmers in OSHPD_ID (e.g. '106')
-         OSHPD_ID = OSHPD_ID %>% substring(4) %>% as.integer(),
-         
-         # replace 0 with NA
-         EMSA_TRAUMA_CTR_DESIG2 = replace(
-           EMSA_TRAUMA_CTR_DESIG, EMSA_TRAUMA_CTR_DESIG==0, NA),
-         EMSA_TRAUMA_PEDS_CTR_DESIG2 = replace(
-           EMSA_TRAUMA_PEDS_CTR_DESIG, EMSA_TRAUMA_PEDS_CTR_DESIG==0, NA),
-         ED_LIC_LEVL_END2 = replace(
-           ED_LIC_LEVL_END, ED_LIC_LEVL_END==0, NA) %>% 
-           # Standby < Basic < Comprehensive, set basic as reference since most common
-           factor(levels=c('Basic', 'Standby', 'Comprehensive')),
-         
-        # correct spelling miscategorizations                   
-        # TEACH_HOSP2 = TEACH_HOSP %>% recode(YES = 'YES', NO = 'NO', No = 'NO'),
-         TEACH_HOSP = TEACH_HOSP %>% recode(YES = TRUE, NO = FALSE, No = FALSE),
-        
-        # change type for merge with rural-urban designations
-        COUNTY = as.character(COUNTY)
-  ) %>% 
-  # put 'hf.' as prefix to variables, make lower case
-  setNames(paste0('hf.', names(.) %>% str_to_lower())) %>% 
-  # put 'oshpd_id' first and then rest of variables
-  rename(oshpd_id = hf.oshpd_id) %>% select(oshpd_id, everything())
-
-#
-# __OSHPD Hospital Quarterly Financial ----
-#
-
-# Developed in 2019-05-07 Bivariate 2.5
-financial_subset = financial  %>% filter(!is.na(FAC.NO)) %>% 
-  select(FAC.NO, TEACH.RURL) %>% 
-  mutate(
-    oshpd_id = FAC.NO %>% as.character() %>% substring(4) %>% as.integer(),
-    TEACH_RURL = case_when(
-      TEACH.RURL=='R'~"Small/Rural",
-      TEACH.RURL=='T'~"Teaching",
-      TEACH.RURL==TRUE~NA_character_
-      ),
-    fin.small_rural = TEACH_RURL=='Small/Rural', 
-    fin.teaching = TEACH_RURL=='Teaching') %>% select(-FAC.NO, -TEACH.RURL)
-
-hosp_factors  = hosp_factors %>% left_join(financial_subset, by='oshpd_id') %>% 
-  mutate(
-    fin.small_rural = replace_na(fin.small_rural, FALSE),
-    fin.teaching = replace_na(fin.teaching, FALSE)
-  )
-
-#
-# __Other hospital designations ----
-#
-
-# Critical Access hospitals
-cah_hospitals = cah_data$oshpd_id %>% as.character() %>% substring(4) %>% as.integer()
-hosp_factors$cah = hosp_factors$oshpd_id %in% cah_data$oshpd_id
-
-# Affiliation/Designation as indicated by California Children's Services
-# remove '106' prefix from OSHPD_ID
-childrens_hospitals = c(
-  106010776, 106010856, 106190170, 106190429, 106190555, 106191227, 106191228, 
-  106196168, 106204019, 106300032, 106314024, 106341006, 106341052, 106361246, 
-  106370673, 106380777, 106380964, 106381154, 106430883, 106434040, 106434153, 
-  106190796) %>% as.character() %>% substring(4) %>% as.integer()
-
-hosp_factors = hosp_factors %>% mutate(
-  ccs.childrens_hosp = oshpd_id %in% childrens_hospitals
-)
-
-(childrens = hosp_factors %>% filter(ccs.childrens_hosp) %>% select(
-  oshpd_id, hf.fac_name, hf.ped_bed_lic, hf.nicu_bed_lic, 
-  hf.emsa_trauma_peds_ctr_desig, hf.facility_level, 
-  hf.type_svc_principal, hf.county))
-
-# Add rurality
-hosp_factors = urban_classif_reduced %>% 
-  rename(nchs.fac_urban_rural = urban_rural.factor, 
-         nchs.fac_urban_rural2 = urban_rural.factor2,
-         nchs.fac_urban_rural.int = urban_rural.int) %>% 
-  select(fac_county.name, nchs.fac_urban_rural, nchs.fac_urban_rural2,
-         nchs.fac_urban_rural.int) %>% 
-  rename(hf.county = fac_county.name) %>% 
-  left_join(hosp_factors, ., by='hf.county')
-
-
-
-
-#
-# __Individual-level Aggregates: All ----
-#
-
-# hf.enc_total = hf.ALL_total
-# pediatric_encounters = data_ %>% count(oshpd_id) %>% rename(hf.enc_total=n)
-# hosp_factors = left_join(hosp_factors, pediatric_encounters, by = 'oshpd_id')
-
-# add percent medicaid, percent medicaid or uninsured
-
-percent_medicaid = data_ %>% 
-  select(oshpd_id, insurance3) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(insurance3=='Medicaid', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.medicaid_rf = rf)
-
-percent_medicaid_uninsured = data_ %>% 
-  select(oshpd_id, insurance3) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(insurance3=='Medicaid' | insurance3=='Uninsured/self-pay', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.medicaid_or_uninsured_rf = rf)
-
-# percent non-white
-percent_nonwhite = data_ %>% 
-  select(oshpd_id, race_group2) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(race_group2!='White', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.nonwhite_rf = rf)
-
-# percent high severity
-
-percent_sev4or5 = data_ %>% 
-  select(oshpd_id, sev.all.max.int) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(sev.all.max.int==4|sev.all.max.int==5, na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.sev4or5 = rf)
-
-# join all
-
-hosp_factors = hosp_factors %>% 
-  left_join(percent_medicaid, by='oshpd_id')  %>% 
-  left_join(percent_medicaid_uninsured, by='oshpd_id') %>% 
-  left_join(percent_nonwhite, by='oshpd_id') %>%
-  left_join(percent_sev4or5, by='oshpd_id')
-
-# count transfers
-
-# both admit and discharge home as control
-both_control = data_ %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.ALL_total=n(), 
-            hf.ALL_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate(hf.ALL_transferred_rf = hf.ALL_transferred_total/hf.ALL_total) 
-
-# admit as control
-admit_only = data_ %>% filter(outcome!='dc home') %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.ADMIT_total=n(), 
-            hf.ADMIT_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate( hf.ADMIT_transferred_rf = hf.ADMIT_transferred_total/hf.ADMIT_total) 
-
-# discharge home as control
-
-dc_only = data_  %>% filter(outcome!='admitted') %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.DC_total=n(), 
-            hf.DC_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate(hf.DC_transferred_rf = hf.DC_transferred_total/hf.DC_total) 
-
-# join all
-
-hosp_factors = hosp_factors %>% 
-  left_join(both_control, by='oshpd_id')  %>% 
-  left_join(admit_only, by='oshpd_id') %>% 
-  left_join(dc_only, by='oshpd_id')
-
-
-
-#
-# __Individual-level Aggregates: Subset to non-injured ----
-#
-
-df_ = data_ %>% 
-  #exclude rare events
-  filter(!is.na(outcome)) %>% 
-  filter(!ccs_injury_any) %>% 
-  # exclude medicare 
-  filter(insurance2!='Medicare') %>% mutate(
-    transferred.factor = transferred %>% factor(levels=c('FALSE', 'TRUE'))
-  ) 
-
-
-percent_medicaid = df_ %>% 
-  select(oshpd_id, insurance3) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(insurance3=='Medicaid', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.ei.medicaid_rf = rf)
-
-percent_medicaid_uninsured = df_ %>% 
-  select(oshpd_id, insurance3) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(insurance3=='Medicaid' | insurance3=='Uninsured/self-pay', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.ei.medicaid_or_uninsured_rf = rf)
-
-# percent non-white
-percent_nonwhite = df_ %>% 
-  select(oshpd_id, race_group2) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(race_group2!='White', na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.ei.nonwhite_rf = rf)
-
-# percent high severity
-
-percent_sev4or5 = df_ %>% 
-  select(oshpd_id, sev.all.max.int) %>% group_by(oshpd_id) %>% 
-  summarise(freq = sum(sev.all.max.int==4|sev.all.max.int==5, na.rm=TRUE),
-            total = n()) %>% 
-  mutate(rf = freq/total) %>% select(oshpd_id, rf) %>% 
-  rename(hf.ei.sev4or5 = rf)
-
-# join all
-
-hosp_factors = hosp_factors %>% 
-  left_join(percent_medicaid, by='oshpd_id')  %>% 
-  left_join(percent_medicaid_uninsured, by='oshpd_id') %>% 
-  left_join(percent_nonwhite, by='oshpd_id') %>%
-  left_join(percent_sev4or5, by='oshpd_id')
-
-# count transfers
-
-# both admit and discharge home as control
-both_control = df_ %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.ei.ALL_total=n(), 
-            hf.ei.ALL_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate(hf.ei.ALL_transferred_rf = hf.ei.ALL_transferred_total/hf.ei.ALL_total) 
-
-# admit as control
-admit_only = df_ %>% filter(outcome!='dc home') %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.ei.ADMIT_total=n(), 
-            hf.ei.ADMIT_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate( hf.ei.ADMIT_transferred_rf = hf.ei.ADMIT_transferred_total/hf.ei.ADMIT_total) 
-
-# discharge home as control
-
-dc_only = df_  %>% filter(outcome!='admitted') %>% 
-  select(oshpd_id, transferred) %>% group_by(oshpd_id) %>% 
-  summarise(hf.ei.DC_total=n(), 
-            hf.ei.DC_transferred_total = sum(transferred, na.rm=TRUE)) %>% 
-  ungroup %>% 
-  mutate(hf.ei.DC_transferred_rf = hf.ei.DC_transferred_total/hf.ei.DC_total) 
-
-# join all
-
-hosp_factors = hosp_factors %>% 
-  left_join(both_control, by='oshpd_id')  %>% 
-  left_join(admit_only, by='oshpd_id') %>% 
-  left_join(dc_only, by='oshpd_id')
-
-
-#
-# __ Link Peds Ready data----
-#
-
-# edited from 2018-11-12_Transfer RFs, updated 2019/05/14
-
-# ADD OSHPD_IDs
-peds_ready_pilot_reduced = peds_ready_pilot %>% 
-  left_join(pr_to_oshpd_id %>% select(-ResponseID), by='portalID') %>%
-  select(oshpd_id, everything()) 
-
-peds_ready_pilot_reduced = peds_ready_pilot_reduced %>% select(
-  oshpd_id, Score,TotalEDPatients,
-  PedEDPatientCat, PedEDPatients, EDConfig, PhysTraining_Ped_YN,
-  PhysTraining_PedEM_YN, starts_with('Policies'), -Policies_Maltreat_YN, agreements, guidelines) %>% mutate(
-    guidelines = recode(guidelines, Y='Yes',N='No', .default="Unknown") %>% 
-      factor(levels=c('Yes','No','Unknown')),
-    agreements = recode(agreements, Y='Yes',N='No', .default="Unknown") %>% 
-      factor(levels=c('Yes','No','Unknown')),
-    guidelines2 = case_when(
-      guidelines=='Yes'~TRUE,
-      guidelines=='No'~FALSE
-    ),
-
-    agreements2 = case_when(
-      agreements=='Yes'~TRUE,
-      agreements=='No'~FALSE
-    ),
-    guidelines_agreements = agreements %>% as.character() %>% 
-      replace(guidelines=='No', 'No Guidelines')%>% recode(
-      'Yes' = 'Guidelines and Agreements', 
-      'No' = 'Guidelines, No Agreements',
-      'No Guidelines' = 'No Guidelines'),
-    guidelines_agreements.factor = guidelines_agreements %>% 
-      factor(levels=c('Guidelines and Agreements',
-                      'Guidelines, No Agreements', 
-                      'No Guidelines')),
-    Score10 = Score/10,
-    Score_quintiles = case_when(
-      Score<20~"0-20",
-      Score>=20 & Score<40 ~ "20-40",
-      Score>=40 & Score<60 ~ "40-60",
-      Score>=60 & Score<80 ~ "60-80",
-      Score>=80 ~ "80-100"
-    ) %>% factor(levels=c('80-100', '60-80', '40-60', '20-40')),
-    PedEDPatientCat = PedEDPatientCat %>% 
-      factor(levels=c('high', 'mediumHigh', 'medium', 'low'))) %>%
-    mutate(oshpd_id = oshpd_id %>% substring(4) %>% as.integer())
-    
-
-# clean up an error
-peds_ready_pilot_reduced$EDConfig[peds_ready_pilot_reduced$EDConfig=='GenEd']='GenED'
-peds_ready_pilot_reduced$EDConfig = peds_ready_pilot_reduced$EDConfig %>% as.character() %>% as.factor()
-
-peds_ready_pilot_reduced = peds_ready_pilot_reduced %>%
-  # put 'hf.' as prefix to variables
-  setNames(paste0('pr.', names(.))) %>% rename(oshpd_id = pr.oshpd_id)
-
-# merge data
-hosp_factors = hosp_factors %>% left_join(peds_ready_pilot_reduced, by='oshpd_id') %>% 
-  mutate(pr.responded = !is.na(pr.Score))
 
 # Export data----
-write_feather(data_, 'local_transfers_dev/2019-05-14_2011_all_peds.feather')
-write_feather(hosp_factors, 'local_transfers_dev/2019-05-14_2011_hospital_data.feather')
+write_feather(data_, 'local_transfers_dev/2019-05-14_2012_all_peds.feather')
+
 

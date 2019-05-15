@@ -4,7 +4,7 @@
 
 # Import custom functions
 
-source('1.1_supporting_functions.R')
+source('custom_functions/1.1_supporting_functions.R')
 
 # Import libraries
 library(RPostgres) # database
