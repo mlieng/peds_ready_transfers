@@ -10,6 +10,7 @@ library(tidyverse) # data munging, plotting etc
 library(feather) # output
 library(icdpicr) # for illness severity
 library(lubridate) # for managing dates
+library(stringr) # for mananging strings
 
 # Parameters
 odx_max = 10
@@ -304,7 +305,7 @@ data_ = data_ %>%
 
 ccs = ccs_multi_dx_tool %>% 
   # clean up
-  mutate(dx_prin = X.ICD.9.CM.CODE. %>% str_remove_all("\'") %>% trimws(), 
+  mutate(dx_prin = X.ICD.9.CM.CODE. %>% str_remove_all("\'") %>% str_trim(), 
          ccs_group = as.integer(X.CCS.LVL.1.),
          # combine 'Mental illness' with '
          ccs_label = X.CCS.LVL.1.LABEL. %>% str_replace('Mental illness', 'Mental Illness')) %>%
@@ -593,7 +594,7 @@ urban_classif_reduced = urban_classif %>% filter(State.Abr.=='CA') %>%
 
 # recode OSHPD data from numbers to county names (e.g. 58 -> Yuba)
 county_map = county_map %>% mutate(
-  County = County %>% as.character() %>% trimws(),
+  County = County %>% as.character() %>% str_trim(),
   fac_county = pat_county,
   pat_county.name = County,
   fac_county.name = County
