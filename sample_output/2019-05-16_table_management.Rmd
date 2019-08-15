@@ -1,0 +1,57 @@
+---
+title: "2019-05-16_Table_management"
+output: 
+  html_notebook:
+    code_folding: show
+---
+
+Aim: Rename/save copies of old files
+
+```{R}
+#
+# Set-up ----
+#
+
+# Import libraries
+library(RPostgres) # database
+library(tidyverse) # includes
+
+
+
+#
+# Connect to database----
+#
+
+con = dbConnect(RPostgres::Postgres(),
+                dbname='oshpd_postgres', 
+                host="localhost", port=5433,
+                user='postgres',
+                password='')
+dbListTables(con)
+```
+
+Copy Tables
+
+```{R}
+# dbExecute(con, "CREATE TABLE pdd_peds_2019_03 AS TABLE pdd_peds")
+# dbExecute(con, "CREATE TABLE edd_peds_2019_03 AS TABLE edd_peds")
+dbExecute(con, "CREATE TABLE combined_peds_2019_03 AS TABLE combined_peds")
+```
+
+
+```{R}
+dbListTables(con)
+```
+
+Drop Tables
+
+```{R}
+dbExecute(con, "DROP TABLE pdd_peds")
+dbExecute(con, "DROP TABLE edd_peds")
+dbExecute(con, "DROP TABLE combined_peds")
+```
+
+
+```{R}
+dbListTables(con)
+```

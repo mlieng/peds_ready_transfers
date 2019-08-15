@@ -1,10 +1,12 @@
 #
 # Set-up ----
 #
+overall_start = Sys.time()
+message(paste('Time Started: ', overall_start))
 
 # Import custom functions
 
-source('custom_functions/1.1_supporting_functions.R')
+source('custom_functions/1.supporting_functions.R')
 
 # Import libraries
 library(RPostgres) # database
@@ -17,14 +19,14 @@ library(tidyverse) # includes
 oshpd_folder = file.path(getwd(),'local_data','oshpd_full_data')
 
 pdd_col_order = read.csv(
-  file.path(oshpd_folder,'2018-12-07_pdd_column_order_and_types.csv'),
-  header = TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
+  file.path(oshpd_folder,'2019-05-16_pdd_column_order_and_types.csv'),
+  header = TRUE, stringsAsFactors = FALSE)#, fileEncoding="UTF-8-BOM")
 edd_col_order = read.csv(
-  file.path(oshpd_folder,'2018-12-07_edd_column_order_and_types.csv'),
-  header = TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
+  file.path(oshpd_folder,'2019-05-16_edd_column_order_and_types.csv'),
+  header = TRUE, stringsAsFactors = FALSE)#, fileEncoding="UTF-8-BOM")
 combined_peds_cols = read.csv(
-  file.path(oshpd_folder,'2018-12-19_combined_table_designations.csv'), 
-  header=TRUE, stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
+  file.path(oshpd_folder,'2019-05-16_combined_table_designations.csv'), 
+  header=TRUE, stringsAsFactors = FALSE)#, fileEncoding="UTF-8-BOM")
 
 
 #
@@ -43,35 +45,49 @@ dbListTables(con)
 # Set PD table----
 #
 
-pdd_2011_col_types = paste(pdd_col_order$X2011_types, collapse=', ')
-pdd_2011_order = paste(pdd_col_order$X2011, collapse=', ')
-pdd_2016_col_types = paste(pdd_col_order$X2016_types, collapse=', ')
+pdd_2011_col_types = paste(pdd_col_order$X2011_types[1:193], collapse=', ')
+pdd_2011_order = paste(pdd_col_order$X2011[1:193], collapse=', ')
+pdd_2016_col_types = paste(pdd_col_order$X2016_types[1:193], collapse=', ')
+pdd_2017_col_types = paste(pdd_col_order$X2017_types[1:195], collapse=', ')
+
+# remove 'data_id' and 'pat_id'
+pdd_2017_stuff = pdd_col_order  %>% 
+  filter(X2017!='data_id') %>% filter(X2017!='pat_id')
+pdd_2017_order = paste(pdd_2017_stuff$X2017[1:193], collapse=', ')
+
+# create unified column order and type (without 'data_id' but with 'source_ns')
+pdd_combined_col_types = paste(pdd_col_order$overall_types, collapse=', ')
+pdd_combined_col_order = paste(pdd_col_order$overall, collapse=', ')
 
 #
 # Copy PDD databases----
 #
 
 start.time = Sys.time()
-suppress = dbExecute(con, paste("CREATE TABLE pdd_peds (",pdd_2011_col_types,")"))
+suppress = dbExecute(con, paste("CREATE TABLE pdd_peds (",pdd_combined_col_types,")"))
 
 db_copy_and_subset('Marcin_pdd2011.csv', oshpd_folder,
-                   pdd_2011_col_types,'pdd_peds',
-                   subset_command = "agyradm<22")
+                   pdd_2011_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
 db_copy_and_subset('Marcin_pdd2012.csv', oshpd_folder,
-                   pdd_2011_col_types,'pdd_peds',
-                   subset_command = "agyradm<22")
+                   pdd_2011_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
 db_copy_and_subset('Marcin_pdd2013.csv', oshpd_folder,
-                   pdd_2011_col_types,'pdd_peds',
-                   subset_command = "agyradm<22")
+                   pdd_2011_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
 db_copy_and_subset('Marcin_pdd2014.csv', oshpd_folder,
-                   pdd_2011_col_types,'pdd_peds',
-                   subset_command = "agyradm<22")
+                   pdd_2011_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
 db_copy_and_subset('Marcin_pdd2015.csv', oshpd_folder,
-                   pdd_2016_col_types,'pdd_peds', pdd_2011_order,
-                   subset_command = "agyradm<22")
+                   pdd_2016_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
 db_copy_and_subset('Marcin_pdd2016.csv', oshpd_folder,
-                   pdd_2016_col_types,'pdd_peds', pdd_2011_order,
-                   subset_command = "agyradm<22")
+                   pdd_2016_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2017_cols=TRUE)
+db_copy_and_subset('jm_pdd2017.csv', oshpd_folder,
+                   pdd_2017_col_types,'pdd_peds', pdd_combined_col_order,
+                   subset_command = "agyradm<22", add_pdd_2011_source_cols=TRUE)
+
 end.time=Sys.time()
 print(paste('Time Finished: ', end.time))
 print(end.time-start.time)
@@ -82,10 +98,16 @@ tbl(con, 'pdd_peds') %>% select(dsch_yr, agyradm) %>% collect() %>% table()
 # Set up ED table----
 #
 
-edd_2011_col_types = paste(edd_col_order$X2011_types, collapse=', ')
-edd_2011_order = paste(edd_col_order$X2011, collapse=', ')
-edd_2015_col_types = paste(edd_col_order$X2015_types, collapse=', ')
-edd_2016_col_types = paste(edd_col_order$X2016_types, collapse=', ')
+edd_2011_col_types = paste(edd_col_order$X2011_types[1:101], collapse=', ')
+edd_2011_order = paste(edd_col_order$X2011[1:101], collapse=', ')
+edd_2015_col_types = paste(edd_col_order$X2015_types[1:101], collapse=', ')
+edd_2016_col_types = paste(edd_col_order$X2016_types[1:101], collapse=', ')
+edd_2017_col_types = paste(edd_col_order$X2017_types, collapse=', ')
+
+# remove 'data_id' and 'pat_id'
+edd_2017_stuff = edd_col_order %>% 
+  filter(X2017!='data_id') %>% filter(X2017!='pat_id')
+edd_2017_order = paste(edd_2017_stuff$X2017, collapse=', ')
 
 suppress = dbExecute(con, paste("CREATE TABLE edd_peds (",edd_2011_col_types,")"))
 
@@ -95,22 +117,25 @@ suppress = dbExecute(con, paste("CREATE TABLE edd_peds (",edd_2011_col_types,")"
 
 start.time=Sys.time()
 db_copy_and_subset('Marcin_ed2011.csv', oshpd_folder,
-                   edd_2011_col_types, 'edd_peds',
+                   edd_2011_col_types, 'edd_peds', 
                    subset_command='agyrserv<22')
 db_copy_and_subset('Marcin_ed2012.csv', oshpd_folder,
-                   edd_2011_col_types, 'edd_peds' ,
+                   edd_2011_col_types, 'edd_peds', 
                    subset_command='agyrserv<22')
 db_copy_and_subset('Marcin_ed2013.csv',  oshpd_folder,
-                   edd_2011_col_types, 'edd_peds',
+                   edd_2011_col_types, 'edd_peds', 
                    subset_command='agyrserv<22')
 db_copy_and_subset('Marcin_ed2014.csv', oshpd_folder,
-                   edd_2011_col_types, 'edd_peds',
+                   edd_2011_col_types, 'edd_peds', 
                    subset_command='agyrserv<22')
 db_copy_and_subset('Marcin_ed2015.csv', oshpd_folder,
                    edd_2015_col_types, 'edd_peds', edd_2011_order,
                    subset_command='agyrserv<22')
 db_copy_and_subset('Marcin_ed2016.csv', oshpd_folder,
                    edd_2016_col_types, 'edd_peds', edd_2011_order,
+                   subset_command='agyrserv<22')
+db_copy_and_subset('jm_ed2017.csv', oshpd_folder,
+                   edd_2017_col_types, 'edd_peds', edd_2011_order,
                    subset_command='agyrserv<22')
 end.time=Sys.time()
 print(paste('Time Finished: ', end.time))
@@ -176,10 +201,15 @@ suppress_out = dbExecute(con, "DROP TABLE subset_pdd_peds")
 print('--2016--')
 dbExecute(con, "SELECT * INTO subset_pdd_peds FROM pdd_peds WHERE dsch_yr=2016") 
 recode_add_PDD_subset()
+suppress_out = dbExecute(con, "DROP TABLE subset_pdd_peds")
+
+print('--2017--')
+dbExecute(con, "SELECT * INTO subset_pdd_peds FROM pdd_peds WHERE dsch_yr=2017") 
+recode_add_PDD_subset()
 # suppress_out = dbExecute(con, "DROP TABLE subset_pdd_peds")
 
 print('--------------------------------')
-print('All done copying years 2011-2016')
+print('All done copying years 2011-2017')
 end.time=Sys.time()
 print(paste('Time Finished: ', end.time))
 print(end.time-start.time)
@@ -190,7 +220,7 @@ print(end.time-start.time)
 #
 
 start.time = Sys.time()
-suppress_out = dbExecute(con, "DROP TABLE subset_edd_peds")
+#suppress_out = dbExecute(con, "DROP TABLE subset_edd_peds")
 
 print('--2011--')
 dbExecute(con, "SELECT * INTO subset_edd_peds FROM edd_peds WHERE serv_y=2011") 
@@ -220,10 +250,15 @@ suppress_out = dbExecute(con, "DROP TABLE subset_edd_peds")
 print('--2016--')
 dbExecute(con, "SELECT * INTO subset_edd_peds FROM edd_peds WHERE serv_y=2016") 
 recode_add_EDD_subset()
+suppress_out = dbExecute(con, "DROP TABLE subset_edd_peds")
+
+print('--2017--')
+dbExecute(con, "SELECT * INTO subset_edd_peds FROM edd_peds WHERE serv_y=2017") 
+recode_add_EDD_subset()
 # suppress_out = dbExecute(con, "DROP TABLE subset_edd_peds")
 
 print('--------------------------------')
-print('All done copying years 2011-2016')
+print('All done copying years 2011-2017')
 end.time=Sys.time()
 print(paste('Time Finished: ', end.time))
 print(end.time-start.time)
@@ -256,3 +291,14 @@ res3 = dbGetQuery(
   SELECT database, start_year, count(database) 
   FROM combined_peds GROUP BY database, start_year")
 res3 %>% print()
+
+
+
+#
+# ----
+#
+suppress_out = dbExecute(con, "DROP SEQUENCE record_id_seq")
+
+overall_end = Sys.time()
+message(paste('Time Finished: ', overall_end))
+print(overall_end-overall_start)
