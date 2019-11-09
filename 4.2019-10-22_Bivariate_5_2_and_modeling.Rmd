@@ -1,0 +1,1455 @@
+---
+title: "2019-10-07 Bivariate5"
+output: 
+  html_notebook:
+    css: custom_style.css
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+**Start Date:** 2019-10-07
+
+# Background
+
+See `Transfer RFS5.2` & `2019-05-14_Bivariate 3` (expanded intro)
+
+# Aims
+
+* Add distance data
+* low severity 
+
+* Will need to incorporate the big tables from Bivariate 4 for insertion into manuscript
+
+* Common diagnoses
+* Readmissions
+
+# Materials & Methods
+
+* 2011 hospital-factor data + pediatric readiness (Generated 2019-05-14)
+* 2012 individual-level data (Generated 2019-05-14)
+
+
+```{R setup, message=FALSE}
+
+export_path = '2019-07-16_tables_for_draft2'
+
+source('format_result_for_forest.R')
+source('2.complex_chronic_conditions.R')
+source('custom_functions/custom_timer.R')
+
+
+library(tidyverse) # includes 
+# dplyr(data munging), ggplot2 (plotting), tidyr (tidy data)
+library(lubridate) #working with dates
+library(knitr) # notebook
+
+# library(formattable)
+# library(DT)
+
+# plotting
+library(ggplot2)
+library(forestplot)
+library(plotly)
+library(ggridges) # multiple distributions
+library(GGally) #ggpairs
+
+# comparing
+library(compareGroups)
+library(skimr) # descriptive statistics
+library(RStata) # for running stata in R
+
+# storage
+library(feather)
+library(foreign) # EXPORT TO STATA
+library(RPostgres)
+
+# geo distances 
+library(geosphere)
+
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=FALSE, fig.align="center")
+oshpd_folder = file.path(getwd(),'local_data','oshpd_full_data')
+
+# set up stata use
+options("RStata.StataPath" = "\"C:\\Program Files (x86)\\Stata15\\Stata-64\"")
+options("RStata.StataVersion" = 15)
+```
+
+```{R setup2}
+sessionInfo()
+
+```
+
+```{R custom_functions}
+
+univar_table = function(df, ...){
+  df %>% select(...) %>% group_by(...) %>% summarise(Freq=n()) %>% ungroup() %>%mutate(rel.freq = Freq/sum(Freq, na.rm=TRUE)) %>% arrange(desc(Freq))
+}
+
+count_trues = function(df, col, ...){
+  df %>% ungroup %>% 
+    group_by(...) %>%
+    summarise_at(vars(col),
+    list(total = ~n(),
+  count= ~sum(., na.rm=TRUE))) %>%
+  mutate(prop = count/total) %>% return()
+}
+
+
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+format_results = function(results){
+  results %>% mutate(
+    estimate = round(estimate,4), 
+    std.error = round(estimate,4), 
+    conf.int = paste0('(', round(conf.low,3),'-',round(conf.high,3),')'),
+    p.value = formatC(p.value, format = "e", digits = 2) #format.pval(p.value, digits = 3)
+  ) %>%  
+    select(term, estimate, conf.int, std.error, p.value, -statistic, -conf.low, -conf.high)
+  
+}
+
+make_forest_plot = function(tab){
+  tab %>% 
+    select(Label, estimate_label, conf.label, p.value_label) %>% 
+    rbind(c('Variable',  'Adj. OR', '95% CI', 'p-value'),.) %>%
+    forestplot(., 
+               mean = c(NA, tab$estimate),
+               lower = c(NA, tab$conf.low),
+               upper = c(NA, tab$conf.high),
+               xlog=TRUE,  # convert x-axis to log
+               zero=1, #middle value = 1,
+               graph.pos=3,
+               xticks = c(0.66,0.8, 1,1.25, 1.5),
+               boxsize=0.2, 
+               ci.vertices=TRUE, ci.vertices.height = 0.4 # add whiskers
+    )
+}
+
+# gen_table_results = function(res){
+#   try(createTable(res) %>% print())
+#   try(missingTable(res) %>% print())
+# }
+
+gen_table_results = function(res, missing_table = TRUE, addmd = TRUE, ...){
+  
+  table_ = createTable(res, ...)
+  results = list(table = table_, 
+                 if(missing_table) missing = try(missingTable(res))
+                 )
+  if(addmd) export2md(results$table) %>% print()
+  if(!addmd) print(results)
+  
+  return(results)
+}
+
+```
+
+# Methods/Results
+
+Start timer
+
+```{R}
+new_timer = customTimer()
+```
+
+Read data
+
+```{R}
+data_ = read_feather('2019-05-14_2012_all_peds.feather')
+hosp_factors  = read_feather('2019-05-14_2011_hospital_data.feather')
+```
+
+```{R}
+df_ =  data_
+
+# df_ = data_ %>% 
+#   #exclude rare events
+#   filter(!is.na(outcome)) %>% 
+#   filter(!ccs_injury_any) %>% 
+#   # exclude medicare 
+#   filter(insurance2!='Medicare') %>% mutate(
+#     transferred.factor = transferred %>% factor(levels=c('FALSE', 'TRUE'))
+#   ) 
+
+df_hosp = hosp_factors %>% mutate(
+  hf.medicaid_pct =  hf.medicaid_rf * 100,
+  hf.medicaid_or_uninsured_pct = hf.medicaid_or_uninsured_rf * 100,
+  hf.nonwhite_pct = hf.nonwhite_rf * 100,
+  hf.sev4or5_pct = hf.sev4or5*100,
+  
+  hf.ALL_total_norm = scale(hf.ALL_total),
+  hf.medicaid_norm = scale(hf.medicaid_rf),
+  hf.nonwhite_norm = scale(hf.nonwhite_rf),
+  hf.sev4or5_norm = scale(hf.sev4or5),
+  
+  pr.score_cut_70 = pr.Score > 70,
+  pr.score_cut_70_factor = pr.score_cut_70 %>% factor(levels=c('FALSE', 'TRUE')),
+  pr.guidelines_agreements2 = recode(pr.guidelines_agreements,
+                                     "Guidelines and Agreements" = 'TRUE',
+                                     "Guidelines, No Agreements" = 'FALSE',
+                                     "No Guidelines" = 'FALSE') %>% factor(levels=c('TRUE', 'FALSE')),
+  
+  pr.ames_quartiles = case_when(
+    pr.Score < 59.4 ~'q1',
+    pr.Score >= 59.4 & pr.Score <74.9 ~'q2',
+    pr.Score >=74.9 & pr.Score <88.2 ~ 'q3',
+    pr.Score >=88.2 ~'q4'
+  ) %>% factor(levels=c('q1','q2','q3','q4')),
+  
+  pr.score_quartiles = case_when(
+    pr.Score < 57.66 ~'q1',
+    pr.Score >= 57.66 & pr.Score < 69.66 ~'q2',
+    pr.Score >= 69.66 & pr.Score < 86.02 ~ 'q3',
+    pr.Score >= 86.02 ~'q4'
+  ) %>% factor(levels=c('q1','q2','q3','q4')),
+  
+  fin.small_rural_factor = fin.small_rural %>% factor(levels=c('TRUE', 'FALSE')),
+  
+  hf.type_cntrl2 = hf.type_cntrl %>% as.character() %>% recode(
+    "City and/or County" = 'Non-profit',
+    "District" = "Non-profit",
+    "Investor - individual" = 'Investor',
+    "Investor - Corporation" = 'Investor',
+    "Investor - Limited Liability Company" = 'Investor',
+    "Investor - Partnership" = 'Investor',
+    "Non-Profit Corporation (incl. Church-related)" = 'Non-profit', 
+    "University of California" = 'Non-profit', 
+    "State" = 'Non-profit',
+    .default = NA_character_, # 'Unknown',
+    .missing = NA_character_ #'Unknown'
+    # "" = 'Unknown',
+    # "0" = 'Unknown',
+    
+  ) %>% factor(levels=c('Non-profit', 'Investor', 'Unknown')),
+  
+  hf.emsa_trauma_ctr_desig3 = hf.emsa_trauma_ctr_desig %>% as.character() %>% 
+    recode(
+      "LEVEL I" = 'Level I & II', 
+      "LEVEL II" = 'Level I & II', 
+      "LEVEL III" = 'Level III & IV',
+      "LEVEL IV" = 'Level III & IV', 
+      "0" = 'None',
+      .default = NA_character_ ,
+      .missing = NA_character_
+    ) %>% factor(levels=c('Level I & II', 'Level III & IV', 'None')),
+  hf.emsa_trauma_peds_ctr_desig3 = hf.emsa_trauma_peds_ctr_desig %>% as.character() %>% 
+    recode(
+      "LEVEL I PEDS" = 'TRUE', 
+      "LEVEL II PEDS" = 'TRUE', 
+      "0" = 'FALSE',
+      .default = NA_character_ ,
+      .missing = NA_character_
+    ) %>% factor(levels=c('FALSE', 'TRUE'))
+) %>%
+  rename( # for easier viewing
+    hf.emsa_trauma_lvl  = hf.emsa_trauma_ctr_desig,
+    hf.emsa_trauma_lvl2 = hf.emsa_trauma_ctr_desig2,
+    hf.emsa_trauma_lvl3 = hf.emsa_trauma_ctr_desig3,
+    hf.emsa_peds_lvl = hf.emsa_trauma_peds_ctr_desig,
+    hf.emsa_peds_lvl2 = hf.emsa_trauma_peds_ctr_desig2,
+    hf.emsa_peds_lvl3 = hf.emsa_trauma_peds_ctr_desig3
+  )
+
+df_  = df_ %>% mutate(
+  
+  age_cats4 = case_when(
+    age_days<28 ~ "0-27d",
+    age_days>=28 & age_exact<1 ~ "28d-12m",
+    age_exact>=1 & age_exact<2 ~"13m-24m",
+    age_exact>=2 & age_exact<6 ~"2y-5y",
+    age_exact>=6 & age_exact<12 ~"6y-11y",
+    age_exact>=12 & age_exact<18 ~"12y-17y",
+    age_exact>=18 & age_exact<21 ~NA_character_) %>% factor(
+      levels=c('0-27d','28d-12m','13m-24m','2y-5y','6y-11y','12y-17y')),
+  age_cats4.1 = case_when(
+    age_days<28 ~ "Neonate",
+    age_days>=28 & age_exact<1 ~ "Infant",
+    age>=1 & age<2 ~"Toddler",
+    age>=2 & age<6 ~"Early Childhood",
+    age>=6 & age<12 ~"Middle Childhood",
+    age>=12 & age<18 ~"Early Adolescence",
+    age>=18 & age<21 ~NA_character_) %>% factor(
+      levels=c("Neonate", "Infant", "Toddler", "Early Childhood", "Middle Childhood", "Early Adolescence")),
+  
+  transferred.factor = transferred %>% factor(levels=c('FALSE', 'TRUE')),
+  admitted = outcome=='admitted',
+  outcome.factor = factor(outcome, levels=c('dc home', 'admitted', 'transferred'))
+)
+
+```
+
+
+```{r new ccs}
+single_icd9 = read.csv('ccs/ccs_dxlabel 2015.csv', stringsAsFactors = F)
+
+df_ = df_ %>% mutate(
+  ccs285_dx_prin = ccs_dx_prin,
+  ccs285_label = factor(ccs_dx_prin,
+                             levels=single_icd9$CCS.DIAGNOSIS.CATEGORIES,
+                             labels=single_icd9$CCS.DIAGNOSIS.CATEGORIES.LABELS
+                             ) %>% as.character())
+
+# df_$ccs_dx_prin_label = factor(df_$ccs_dx_prin, 
+#                                       levels=single_icd9$CCS.DIAGNOSIS.CATEGORIES,
+#                                       labels=single_icd9$CCS.DIAGNOSIS.CATEGORIES.LABELS) %>% as.character()
+
+
+ccs_grouper = df_ %>% select(ccs_injury_any, ccs285_dx_prin, ccs285_label)
+
+# ccs_grouper = df_ %>% select(sql_id, ccs_dx_prin, ccs_injury_any) %>% 
+#   rename(ccs285_dx_prin=ccs_dx_prin) %>% 
+#   mutate(ccs285_dx_prin = as.character(ccs285_dx_prin)) %>% 
+#   left_join(single_icd9, by=c('ccs285_dx_prin'='CCS.DIAGNOSIS.CATEGORIES')) %>% 
+#   rename(ccs285_label = CCS.DIAGNOSIS.CATEGORIES.LABELS)
+# 
+# df_  = df_ %>% left_join(ccs_grouper %>% select(-ccs_injury_any), by='sql_id')
+# 
+# ccs_grouper$ccs285_dx_factor = factor(ccs_grouper$ccs285_dx_prin, 
+#                                       levels=single_icd9$CCS.DIAGNOSIS.CATEGORIES,
+#                                       labels=single_icd9$CCS.DIAGNOSIS.CATEGORIES.LABELS)
+
+
+(freqs_overall = ccs_grouper %>% univar_table(ccs285_label))
+(freqs_injured = ccs_grouper %>% filter(ccs_injury_any) %>%  univar_table(ccs285_label))
+(freqs_non_injured = ccs_grouper %>% filter(!ccs_injury_any) %>% univar_table(ccs285_label))
+
+# (freqs_overall2 = ccs_grouper %>% univar_table(ccs285_dx_factor))
+# (freqs_injured2 = ccs_grouper %>% filter(ccs_injury_any) %>%  univar_table(ccs285_dx_factor))
+# (freqs_non_injured2 = ccs_grouper %>% filter(!ccs_injury_any) %>% univar_table(ccs285_dx_factor))
+
+rare_dz = df_ %>% univar_table(ccs285_label) %>% mutate(rare = rel.freq<1/100000) %>% filter(rare)
+uncommon_dz = df_ %>% univar_table(ccs285_label) %>% mutate(uncommon = rel.freq<1/1000) %>% filter(uncommon)
+common_dz = df_ %>% univar_table(ccs285_label) %>% mutate(common = rel.freq>1/100)  %>% filter(common)
+
+rare_dz = df_ %>% univar_table(dx_prin) %>% mutate(rare_1000 = rel.freq<1/1000, rare_100000 = rel.freq<1/100000)
+df_$rare_dz = df_$ccs285_label %in% rare_dz
+df_$uncommon_dz = df_$ccs285_label
+
+rare_dx_category = df_ %>% univar_table(ccs_label) %>% mutate(rare = rel.freq<1/100)
+```
+
+
+```{R new}
+# import data
+nearest_ped = read.csv('additional/nearest_ped_nicu_2011.csv', stringsAsFactors = F)
+nearest_trauma = read.csv('additional/nearest_trauma_2011.csv', stringsAsFactors = F)
+cah = read.csv('data_dropbox/critical_access_hospitals/critical_access_hospitals.csv', stringsAsFactors = F)
+cah_ids = cah$oshpd_id %>% substring(4)
+df_hosp$cah = df_hosp$oshpd_id %in% cah_ids
+
+# add categories
+
+nearest_ped = nearest_ped %>% mutate(
+  near_ped_cats = case_when(
+    !hf.has_ped_bed_lic & near_ped_bed_dist_km<50 ~"0-50km",
+    !hf.has_ped_bed_lic & near_ped_bed_dist_km>=50 ~"51km +",
+    hf.has_ped_bed_lic~NA_character_
+  ),
+  near_ped_incl_resourced = near_ped_cats %>% replace_na("Resourced") %>% 
+    factor(levels=c("Resourced", "0-50km", "51km +")),
+  near_ped_cats = near_ped_cats %>% factor(levels=c("0-50km", "51km +")),
+)
+
+nearest_trauma = nearest_trauma %>% mutate(
+  near_gen_trauma_cats = case_when(
+    !hf.ed_trauma & near_gen_trauma_dist_km<50 ~"0-50km",
+    !hf.ed_trauma & near_gen_trauma_dist_km>=50 ~"51km +",
+    hf.ed_trauma~NA_character_
+  ),
+  near_gen_trauma_incl_resourced = near_gen_trauma_cats %>% replace_na("Resourced") %>% 
+    factor(levels=c("Resourced", "0-50km", "51km +")),
+  near_gen_trauma_cats = near_gen_trauma_cats %>% factor(levels=c("0-50km", "51km+")),
+)
+
+
+# merge
+df_hosp$oshpd_id = df_hosp$oshpd_id %>% str_pad(6, side='left', pad='0')
+nearest_ped$oshpd_id = nearest_ped$oshpd_id %>% str_pad(6, side='left', pad='0')
+nearest_trauma$oshpd_id = nearest_trauma$oshpd_id %>% str_pad(6, side='left', pad='0')
+df_$oshpd_id = df_$oshpd_id %>% str_pad(6, side='left', pad='0')
+
+df_hosp = df_hosp %>% 
+  left_join(nearest_ped %>% select(-starts_with('hf.'), -ends_with('latitude'), -ends_with('longitude')),  by='oshpd_id') %>% 
+  left_join(nearest_trauma %>% select(-starts_with('hf.'), -ends_with('latitude'), -ends_with('longitude')),  by='oshpd_id')
+
+
+# import ped data 
+# originally from 2019-08-27 Models 0.4 Add peds data
+pr_pilot = read.csv('local_data/peds_ready/2012_CA_PediatricReadinessPilotData.csv', stringsAsFactors = F)
+# pr_qi = read.csv('local_data/peds_ready/CA_PedsReadyQIData_031318.csv', stringsAsFactors = F)
+pr_to_oshpd_id = read.csv('local_data/2019-07-02_pedsready_oshpd_linkage_pilot.csv', stringsAsFactors = FALSE)
+
+short = pr_to_oshpd_id %>% select(portalID, oshpd_id) %>% mutate(oshpd_id = substring(oshpd_id,4))
+desigs = pr_pilot %>% mutate_all(~(na_if(.,""))) %>% # replace blanks ("") with NA
+  # initial mutate
+  mutate(
+  pr.inpatient = InptPedSvc=="Y",
+  # replace missing with 'FALSE' since it was a conditional question on having inpatient services
+  pr.has_picu = (InptPedCap_PICU_YN=="Y"),
+  pr.has_nicu  = (InptPedCap_NICU_YN =="Y"),
+  pr.has_ped_ward = (InptPedCap_PedWard_YN) =="Y",
+  pr.has_ped_ed = EDConfig %in% c("PedEd", "SepPedEd")) %>%
+   # replace_blanks with FALSE 
+  mutate_if(is.logical, ~replace_na(., FALSE)) %>% 
+  
+  # second mutate(based on previous designations)
+  mutate(
+  pr.ped_desig = case_when(
+    pr.has_ped_ed & pr.has_ped_ward & pr.has_picu~'Ped ED + Ped Ward + PICU',
+    pr.has_ped_ed & pr.has_ped_ward & !pr.has_picu ~'Ped ED + Ped Ward',
+    pr.has_ped_ed & !pr.has_ped_ward & pr.has_picu ~'Ped ED + PICU',
+    !pr.has_ped_ed & pr.has_ped_ward & pr.has_picu ~'Ped Ward + PICU',
+    !pr.has_ped_ed & !pr.has_ped_ward & pr.has_picu ~'PICU only',
+    !pr.has_ped_ed & pr.has_ped_ward & !pr.has_picu ~'Ped Ward only',
+    pr.has_ped_ed & !pr.has_ped_ward & !pr.has_picu ~'Ped ED only',
+    TRUE~'None'
+  ),
+  pr.inpatient2 = pr.has_ped_ward | pr.has_picu,
+  pr.ped_1plus = pr.has_ped_ed | pr.has_ped_ward | pr.has_picu,
+  pr.ped_2 = pr.ped_desig  %in% c('Ped ED + Ped Ward', 'Ped ED + PICU','Ped Ward + PICU'),
+  pr.ped_3 = pr.ped_desig == 'Ped ED + Ped Ward + PICU',
+  pr.ped_2plus = pr.ped_3 | pr.ped_2,
+  pr.AgeMed = AgeMed,
+  pr.AgeMed_Other_Comments = AgeMed_Other_Comments,
+  pr.AgeTrauma = AgeTrauma,
+  pr.AgeTrauma_Other_Comments = AgeTrauma_Other_Comments
+) %>% select(portalID, starts_with('pr.')) %>% 
+  # replace_blanks with FALSE 
+ # mutate_if(is.logical, ~replace_na(., FALSE)) %>% 
+  left_join(short, by="portalID")
+
+df_hosp = df_hosp %>% left_join(desigs, by='oshpd_id')
+```
+
+```{r}
+hosp_vars = c('oshpd_id', 'hf.fac_name', 'hf.has_ped_bed_lic', 'fin.small_rural', 'pr.responded')
+
+admit_hospital = df_ %>% group_by(oshpd_id, outcome ) %>% summarise(Freq=n()) %>% 
+  mutate(outcome=outcome %>% replace_na('other') %>% str_replace_all('dc home', 'dc_home')) %>% 
+           spread(outcome, Freq) %>% ungroup()
+admit_hospital = admit_hospital %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred), 
+  admit_per = admitted/total*100, 
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100,
+  transfer_adm_per = transferred/sum(transferred+admitted)) %>% 
+  left_join(df_hosp %>% select(hosp_vars), by='oshpd_id') %>% select(hosp_vars, everything())
+
+all_none = admit_hospital %>% filter(transfer_adm_per==1 | transfer_adm_per==0 | is.na(transfer_adm_per))
+
+admit_hospital_ei = df_ %>% filter(!ccs_injury_any) %>% group_by(oshpd_id, outcome ) %>% summarise(Freq=n()) %>% 
+  mutate(outcome=outcome %>% replace_na('other') %>% str_replace_all('dc home', 'dc_home')) %>% 
+           spread(outcome, Freq) %>% ungroup()
+admit_hospital_ei = admit_hospital_ei %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred), 
+  admit_per = admitted/total*100,
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100,
+  transfer_adm_per = transferred/sum(transferred+admitted)) %>% 
+  left_join(df_hosp %>% select(hosp_vars), by='oshpd_id') %>% select(hosp_vars, everything())
+
+all_none_ei = admit_hospital_ei %>% filter(transfer_adm_per==1 | transfer_adm_per==0 | is.na(transfer_adm_per))
+remove(hosp_vars)
+
+df_hosp$hf.all_none = df_hosp$oshpd_id %in% all_none$oshpd_id
+df_hosp$hf.all_none_ei = df_hosp$oshpd_id %in% all_none_ei$oshpd_id
+
+(all_none)
+```
+
+
+```{r}
+pr_pilot$Score %>% skim()
+
+```
+
+
+## Join individual and hospital data
+
+```{R}
+# subset hospital data to data in dataset
+hospitals_in_data = df_$oshpd_id %>% unique()
+df_hosp = df_hosp %>% filter(oshpd_id %in% hospitals_in_data) 
+
+# Check % going to exclude
+df_hosp %>% dim()
+df_hosp %>% univar_table(pr.responded)
+# df_hosp %>% univar_table('ccs.childrens_hosp')
+
+# join with dataset 
+df_ = left_join(df_, df_hosp, by='oshpd_id')
+df_ %>% dim()
+
+# individual exclusions
+df_ %>% univar_table(ccs_injury_any)
+df_ = df_ %>% filter(!ccs_injury_any)
+df_ %>% dim()
+
+df_ %>% univar_table(outcome)
+df_ %>% univar_table(transferred)
+df_ %>% univar_table(insurance2)
+
+df2_ = df_ %>%
+  #exclude rare events
+  filter(!is.na(outcome)) %>%
+  # exclude medicare
+  filter(insurance2!='Medicare')
+df2_ %>% dim()
+
+# hospital exclusions
+df2_ %>% univar_table(pr.responded)
+# df2_ %>% univar_table('ccs.childrens_hosp')
+
+# exclude missing Peds Ready data
+df2_$pr.responded = !is.na(df2_$pr.Score)
+df2_ = df2_ %>% filter(pr.responded) #%>% filter(!cha.childrens_hosp)
+df2_ %>% dim()
+df_hosp %>% dim()
+
+df_hosp_non_responder = df_hosp
+df_hosp = df_hosp %>% filter(pr.responded) # %>% filter(!cha.childrens_hosp)
+df_hosp %>% dim()
+df_hosp %>% univar_table(fin.small_rural)
+
+#exclude rate 0/100
+df_hosp %>% univar_table(hf.all_none)
+df2_ %>% univar_table(hf.all_none)
+# df2_ %>% group_by(fin.small_rural, outcome) %>% summarise(freq=n()) %>% ungroup()%>% 
+#   group_by(fin.small_rural) %>% mutate(rel.freq=freq/sum(freq))
+
+df3_ = df2_ %>%
+  #exclude rare events
+  #filter(!is.na(outcome))  %>% 
+  filter(!hf.all_none)
+
+df_non_injured = df3_
+
+# df_injured = df2_ %>% filter(ccs_injury_any)
+# df_non_injured = df2_ %>% filter(!ccs_injury_any)
+```
+
+
+## Hospital all or none
+
+```{r, eval=FALSE}
+admit_hospital = df_non_injured %>% filter(!hf.has_ped_bed_lic) %>% group_by(hf.fac_name, outcome) %>% summarise(Freq=n()) %>% spread(outcome, Freq) 
+admit_hospital = admit_hospital %>% rename(dc_home = `dc home`) %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred, na.rm=T), 
+  admit_per = admitted/total*100, 
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100)
+admit_hospital_V2 = xtabs(~hf.fac_name+outcome, data=df_non_injured %>% filter(!hf.has_ped_bed_lic))
+
+admit_hospital = df_non_injured %>% group_by(hf.has_ped_bed_lic, hf.fac_name, outcome) %>% summarise(Freq=n()) %>% spread(outcome, Freq) 
+admit_hospital = admit_hospital %>% rename(dc_home = `dc home`) %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred, na.rm=T), 
+  admit_per = admitted/total*100, 
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100,
+  transfer_dc_per = transferred/sum(transferred+admitted, na.rm=T))
+
+admit_hospital %>% filter(transfer_dc_per==0| transfer_dc_per==1)
+
+admit_hospital2 = df_non_injured %>% filter(age_exact<14) %>% group_by(hf.has_ped_bed_lic, oshpd_id, hf.fac_name, outcome) %>% summarise(Freq=n()) %>% spread(outcome, Freq) 
+admit_hospital2 = admit_hospital2 %>% rename(dc_home = `dc home`) %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred, na.rm=T), 
+  admit_per = admitted/total*100, 
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100,
+  transfer_dc_per = transferred/sum(transferred+admitted, na.rm=T))
+
+all_none = admit_hospital2 %>% filter(transfer_dc_per==1 | transfer_dc_per==0)
+
+admit_hospital3 = df2_ %>% filter(age_exact<14) %>% group_by(hf.has_ped_bed_lic, oshpd_id, hf.fac_name, outcome) %>% summarise(Freq=n()) %>% spread(outcome, Freq) 
+admit_hospital3 = admit_hospital3 %>% rename(dc_home = `dc home`) %>% 
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  mutate(
+  total = sum(admitted + dc_home + transferred, na.rm=T), 
+  admit_per = admitted/total*100, 
+  dc_home_per = dc_home/total*100,
+  transferred_per = transferred/total*100,
+  transfer_dc_per = transferred/sum(transferred+admitted, na.rm=T))
+
+all_none3 = admit_hospital3 %>% filter(transfer_dc_per==1 | transfer_dc_per==0)
+
+df_non_injured$all_none_ei = df_non_injured$oshpd_id %in% all_none$oshpd_id
+df_non_injured$all_none = df_non_injured$oshpd_id %in% all_none3$oshpd_id
+```
+
+
+
+```{r, eval=FALSE}
+stata("
+      tab all_none outcome, row
+       tab fin_small_rural outcome if(all_none==0), row
+        tab fin_small_rural outcome if(all_none==1), row
+      tab fin_small_rural outcome by(all_none), row
+      ", data.in = df_non_injured %>% select(fin.small_rural, all_none, outcome))
+```
+
+
+
+
+```{r}
+stata("
+       tab fin_small_rural outcome, row
+       
+       tab fin_small_rural outcome if(outcome!=\"dc home\"), row
+      ", data.in = df_non_injured %>% select(fin.small_rural, outcome))
+```
+
+
+## Descriptive - Hospital {.tabset}
+
+
+```{r}
+hosp_covar_methods = c(
+    # reported in transfers paper
+    hf.teach_hosp = 3,
+    fin.teaching = 3,
+    fin.small_rural = 3, 
+    fin.small_rural_factor =3,
+    hf.ped_bed_lic = NA,
+    hf.has_ped_bed_lic = 3, 
+    # hf.ed_lic_levl_end = 3, #0 Basic Comprehensive Standby
+    hf.ed_lic_levl_end2 = 3, # removes the excess category
+    hf.trauma_ctr = 3, # T/F
+    hf.emsa_trauma_lvl = 3,
+    hf.emsa_trauma_lvl2 = 3,
+    hf.emsa_trauma_lvl3 = 3, # level I&II, III & IV, None
+    hf.emsa_peds_lvl = 3,
+    hf.emsa_peds_lvl2 = 3,
+    hf.emsa_peds_lvl3 = 3,
+    # 'hf.emsa_trauma_ctr_desig', 'hf.emsa_trauma_ctr_desig2', 
+    # 'hf.emsa_trauma_ctr_desig3',
+    # 'hf.emsa_trauma_peds_ctr_desig', 'hf.emsa_trauma_peds_ctr_desig2', 
+    # 'hf.emsa_trauma_peds_ctr_desig3',
+    hf.type_cntrl = 3, #non-profit ... etc...
+    hf.type_cntrl2 = 3, # non-profit, investor unknown
+    
+    # calculated
+    hf.ALL_total = NA, 
+    hf.ei.ALL_total = NA,
+    hf.medicaid_rf = NA,
+    hf.medicaid_pct = NA,
+    hf.medicaid_or_uninsured_rf = NA,
+    hf.medicaid_or_uninsured_pct = NA,
+    hf.nonwhite_rf = NA,
+    hf.nonwhite_pct = NA,
+    hf.sev4or5 = NA,
+    hf.sev4or5_pct = NA,
+    hf.ALL_total_norm = NA,
+    hf.medicaid_norm = NA,
+    hf.nonwhite_norm = NA,
+    hf.sev4or5_norm = NA,
+
+    # peds ready
+    pr.Score=NA, 
+    pr.Score10=NA, 
+    pr.score_cut_70_factor = 3, # > 70 = TRUE,
+    #pr.Score_quintiles= 3,
+    pr.score_quartiles = 3,
+    pr.ames_quartiles = 3,
+    pr.TotalEDPatients=NA, 
+    pr.PedEDPatients=NA,
+    pr.guidelines2=3, 
+    pr.agreements2=3, 
+    pr.guidelines_agreements=3, # has both, lacks agreements, lacks both
+    pr.guidelines_agreements2=3, # guidelines + agreements = TRUE, else = FALSE
+    
+    # distance/ped designations
+    near_ped_bed_dist_km = NA,
+    near_ped_cats = 3,
+    near_ped_incl_resourced = 3,
+    
+    near_gen_trauma_dist_km = NA,
+    near_gen_trauma_cats = 3,
+    near_gen_trauma_incl_resourced =3,
+    
+    hf.has_ped_bed_lic = 3,
+    pr.inpatient2 = 3,
+    cah = 3,
+    
+    # other
+    nchs.fac_urban_rural.int = NA,
+    nchs.fac_urban_rural = 3, # 6 categories
+    nchs.fac_urban_rural2 = 3, # lump the 2 non-metro groups
+    hf.ped_bed_lic = NA,
+    hf.nicu_bed_lic = NA,
+    hf.has_nicu_bed_lic = 3,
+    # hf.psy_bid_lic = NA,
+    # hf.has_psy_bed_lic = 3,
+    ccs.childrens_hosp = 3,
+    hf.facility_level = 3, # consolidated vs. parent
+    hf.type_svc_principal = 3 #gen med surg, pediatric, psychiatric etc
+    # hf.health_svc_area = 3
+  )
+
+
+
+# 3 = categorical, NA = determine normal or non-normal
+indiv_covar_methods = c(
+    age = NA, 
+    age_exact = NA,
+    # age_cats = 3,
+    # age_cats2 = 3,
+    age_cats3 = 3,
+    age_cats4 = 3,
+    age_cats4.1 = 3, # named version of 4 'Neonate, Infant, Toddler...'
+    sex = 3,
+    sex2 = 3, # Male,Female, Missing/unknown/other
+    race_group2 = 3, # recoded from 1..6 to 'White'...'Unknown' etc
+    race_group2.5 = 3, # combine other/unknown
+    race_group3 = 3, # A/PI -> other/unknown
+    lang_spoken2 = 3, # top 5 languages
+    lang_spoken3 = 3, # English/spanish/other
+    census.hs_higher = NA,
+    census.bach_higher = NA,
+    census.med.income = NA,
+    
+    # encounter variables
+    has_ccc_any = 3, 
+    has_ccc_any.factor = 3,
+    # ccc_count = NA, 
+
+    sev.all.max.int = NA,
+    sev.all.max.int = 3,
+    #sev.score.max.factor = 3, # recoded as a factor
+    # sev.all.max.fillna1.int=NA, #replaced 0 with NA
+    # sev.all.max.fillna1.factor=3,
+    # iss_max = NA, #1-6 1 = minor, 6 = unsurvivable
+    # iss_max.factor = 3, # 0 -> NA, still has 9=unknown
+    # iss_r = NA,
+    # iss_r.factor =3, # recoded based on huang
+    # iss_r.cats = 3, # new categories (0,)
+    # iss_r.fillna.cats2 =3,
+    # iss_r.fillna1 = NA,
+    # iss_r.fillna1.factor = 3, # 
+    
+    
+    #insurance2.5 = 3, # deprecated, originally recoding the SQL recode
+    insurance2 = 3, #Medicaid, Private, Uninsured/self, Medicare, Other, Unknown
+    insurance3 = 3, #lump Medicare with Other
+        
+    start_weekend = 3,
+    start_quarter = 3,
+    enc_season = 3,
+    # ccs_dx_prin = 3, # clinical classifications, any
+    ccs_injury_any=3,
+    # ccs_dx_prin_top5 = 3, 
+    # ccs_dx_prin_top10 = 3,
+    
+    # hospital variables
+    fin.small_rural=3,
+    fin.small_rural_factor=3,
+    transferred.char=3,
+
+    # not as important
+    #sev.score.int=NA, 
+    #ccs_mental_health=3, 
+    has.rln=3, 
+    ccs_injury_count=3,
+    nchs.pat_urban_rural = 3
+    # pat_rural_zip = 3
+    # has_ccc=3,
+)
+
+
+
+hosp_covar_names = names(hosp_covar_methods)
+indiv_covar_names = names(indiv_covar_methods)
+assert(sum(hosp_covar_names %in%  names(df_non_injured))==length(hosp_covar_names))
+assert(sum(indiv_covar_names %in%  names(df_non_injured))==length(indiv_covar_names))
+```
+
+## Descriptive - Hospital - main {.tabset}
+
+### Other
+
+```{r}
+df_hosp2 = df_hosp %>% filter(!hf.all_none)
+res_hosp1 = compareGroups(fin.small_rural_factor~. -fin.small_rural_factor, 
+                          data= df_hosp2 %>% select(hosp_covar_names), method=hosp_covar_methods)
+missingTable(res_hosp1)
+```
+
+### Hospital
+
+```{r}
+createTable(res_hosp1) %>% export2md()
+
+```
+
+### Small Rural
+
+```{r}
+res_hosp1_SR = res_hosp1 %>% update(pr.score_cut_70_factor~. -pr.score_cut_70_factor, subset=fin.small_rural==TRUE)
+#gen_table_results(res_hosp1_SR, hide.no=FALSE)
+createTable(res_hosp1_SR) %>% export2md()
+```
+
+### Non-Small Rural
+
+```{R}
+res_hosp1_nonSR = res_hosp1 %>% update(pr.score_cut_70_factor~. -pr.score_cut_70_factor, subset=fin.small_rural==FALSE)
+#gen_table_results(res_hosp1_nonSR, hide.no=FALSE)
+createTable(res_hosp1_nonSR) %>% export2md()
+```
+
+```{r}
+missingTable(res_hosp1_nonSR)
+```
+
+
+
+## Descriptive - Hospital (no pr response) {.tabset}
+
+### Missing Table
+
+```{r}
+res_hosp_no_response = compareGroups(pr.responded~. -pr.responded, 
+                          data= df_hosp_non_responder  %>% select(hosp_covar_names, pr.responded,pr.score_cut_70) %>% 
+                            mutate(pr.responded=factor(pr.responded, levels=c(TRUE, FALSE))), 
+                          method=c(hosp_covar_methods,pr.score_cut_70=3))
+missingTable(res_hosp_no_response)
+```
+
+
+### Main Table
+
+```{r}
+createTable(res_hosp_no_response, hide.no=FALSE, show.all=T) %>% export2md()
+```
+
+
+
+## Descriptive - Individual {.tabset}
+
+### .
+
+```{r}
+df_non_injured_SR = df_non_injured %>% filter(fin.small_rural)
+res_indiv_SR = compareGroups(transferred.factor~. -transferred.factor, 
+                          data= df_non_injured_SR %>% select(indiv_covar_names,pr.score_cut_70_factor, transferred.factor), 
+                          method=indiv_covar_methods)
+missingTable(res_indiv_SR)
+```
+
+### Small and Rural
+
+```{r}
+createTable(res_indiv_SR, hide.no=FALSE) %>% export2md()
+```
+
+### .
+
+```{r}
+df_non_injured_nonSR = df_non_injured %>% filter(!fin.small_rural)
+res_indiv_nonSR = compareGroups(transferred.factor~. -transferred.factor, 
+                          data= df_non_injured_nonSR %>% select(indiv_covar_names,pr.score_cut_70_factor, transferred.factor), 
+                          method=indiv_covar_methods)
+missingTable(res_indiv_nonSR)
+```
+
+
+### Non 'Small & Rural'
+
+```{r}
+createTable(res_indiv_nonSR, hide.no=FALSE) %>% export2md()
+```
+
+### Other
+
+```{r}
+descrTable(transferred.factor~sev.all.max.int, data=df_non_injured_SR, method=3) %>%  export2md()
+descrTable(transferred.factor~sev.all.max.int, data=df_non_injured_SR, method=3, include.miss = TRUE) %>%  export2md()
+descrTable(transferred.factor~sev.all.max.int, data=df_non_injured_nonSR, method=3) %>%  export2md()
+descrTable(transferred.factor~sev.all.max.int, data=df_non_injured_nonSR, method=3, include.miss=TRUE) %>%  export2md()
+```
+
+#### primary payer
+
+```{R}
+descrTable(transferred.factor~insurance3, data=df_non_injured_SR, method=3, include.miss = TRUE)  %>%  export2md()
+descrTable(transferred.factor~insurance3, data=df_non_injured_nonSR, method=3, include.miss=TRUE) %>%  export2md()
+```
+## Descriptive - Individual Hospital Level {.tabset}
+
+### .
+
+```{r}
+res_indiv_hosp = compareGroups(fin.small_rural_factor~. -fin.small_rural_factor, 
+                          data = df_non_injured %>% select(hosp_covar_names), method=hosp_covar_methods)
+missingTable(res_indiv_hosp)
+```
+
+
+### Main
+
+```{r}
+createTable(res_indiv_hosp, hide.no=FALSE) %>% export2md()
+```
+
+### .
+
+```{r}
+df_non_injured_SR = df_non_injured %>% filter(fin.small_rural)
+res_indiv_hosp_SR = compareGroups(transferred.factor~. -transferred.factor, 
+                          data= df_non_injured_SR %>% select(hosp_covar_names,pr.score_cut_70_factor, transferred.factor), 
+                          method=hosp_covar_methods)
+missingTable(res_indiv_hosp_SR)
+```
+
+### Small and Rural
+
+```{r}
+createTable(res_indiv_hosp_SR, hide.no=FALSE) %>% export2md()
+```
+
+### .
+
+```{r}
+df_non_injured_nonSR = df_non_injured %>% filter(!fin.small_rural)
+res_indiv_hosp_nonSR = compareGroups(transferred.factor~. -transferred.factor, 
+                          data= df_non_injured_nonSR %>% select(hosp_covar_names,pr.score_cut_70_factor, transferred.factor), 
+                          method=hosp_covar_methods)
+missingTable(res_indiv_hosp_nonSR)
+```
+
+
+### Non 'Small & Rural'
+
+```{r}
+createTable(res_indiv_hosp_nonSR, hide.no=FALSE) %>% export2md()
+```
+
+### Other
+
+## Aim 1 {.tabset}
+
+### ICC
+
+```{R}
+stata("
+
+melogit transferred  if (fin_small_rural==1), or || oshpd_id:
+estat icc
+
+melogit transferred  if (fin_small_rural==0), or || oshpd_id:
+estat icc
+
+      ", 
+  data.in = df_reduced2)
+
+```
+
+
+```{r}
+df_reduced2 = df_non_injured %>% 
+    select(pr.Score10, pr.score_quartiles, pr.ames_quartiles, pr.score_cut_70,pr.score_cut_70_factor, pr.guidelines_agreements2,
+           outcome, transferred, transferred.factor, oshpd_id, hf.has_ped_bed_lic, pr.inpatient2, fin.small_rural_factor, fin.small_rural,
+           near_ped_bed_dist_km, near_ped_cats, near_ped_bed_time, near_ped_incl_resourced,age_cats2,
+           age_cats3, age_cats4, age_exact, neonate, sex2, race_group3, insurance3, sev.all.max.int, has_ccc_any, hf.ALL_total_norm, hf.medicaid_norm,
+           pr.PedEDPatientCat, cah, hf.teach_hosp, ccs_label, ccs285_label) %>% 
+    mutate(outcome = factor(outcome, levels=c('admitted', 'dc home', 'transferred')),
+           sex2 = factor(sex2, levels=c('Male', 'Female')),
+           oshpd_id = as.integer(oshpd_id))
+foreign::write.dta(df_reduced2, '2019-10-15_df_reduced2.dta')
+```
+
+
+### SR
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1), or
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1)&!missing(sev_all_max_int, sex2, insurance3), or
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1 & outcome !=2), or 
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1 & outcome!=1), or
+
+/* adjusted*/
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1 & outcome !=2), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1 & outcome!=1), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+
+### non-SR
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==0), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==0)&!missing(sev_all_max_int, sex2, insurance3), or
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==0 & outcome !=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==0 & outcome!=1), or || oshpd_id:
+
+/*adjusted*/
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome !=2), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome!=1), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==0)&!missing(age_cats4, sev_all_max_int, sex2, insurance3, has_ccc_any, hf_ALL_total_norm, hf_medicaid_norm, hf_has_ped_bed_lic), or
+
+/*adjusted*/
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome !=2), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome!=1), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+
+
+## Aim 2 {.tabset}
+
+### Small and Rural
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==1 & outcome!=1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==1 & outcome!=2), or || oshpd_id:
+
+/*unadjusted*/
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==1 & outcome!=1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==1 & outcome !=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+### Non-'Small and Rural'
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==0), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==0 & outcome!=1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 if (fin_small_rural==0 & outcome!=2), or || oshpd_id:
+
+/*unadjusted*/
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome!=1), or || oshpd_id:
+
+melogit transferred ib2.pr_guidelines_agreements2 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (fin_small_rural==0 & outcome !=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+
+## Sensitivity {.tabset}
+
+### Neonate {.tabset}
+
+```{r}
+neonate_sr = df_reduced2 %>% filter(fin.small_rural & neonate)
+# For admitted, categories <5
+stata ("tab outcome insurance3  if(age_cats4==1 & fin_small_rural==1), row", data.in=neonate_sr)
+
+# transferred <5 in categories 1 & 2,5 in pr_score>70 => lump (1&2&3) and (4&5) together or treat as continuous
+stata("tab outcome sev_all_max_int  if(age_cats4==1 & fin_small_rural==1), row", data.in=neonate_sr)
+
+
+stata("
+tab outcome insurance3 if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==0), row
+tab outcome insurance3 if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==1), row
+
+tab outcome sev_all_max_int if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==0), row
+tab outcome sev_all_max_int if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==1), row
+
+tab outcome has_ccc_any if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==0), row
+tab outcome has_ccc_any if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==1), row
+
+tab outcome hf_has_ped_bed_lic if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==0), row
+tab outcome hf_has_ped_bed_lic if(age_cats4==1 & fin_small_rural==1 & pr_score_cut_70==1), row
+
+      ", data.in = neonate_sr)
+```
+
+
+#### SR
+
+Decided to adjust for the same exact model with reduced groups.
+
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & neonate) %>% mutate(sev.all.max.int = recode(sev.all.max.int, `1`=3, `2`=3, `5`=4), 
+                                                                         insurance3 = recode(insurance3, `Uninsured/self-pay`='Other',
+                                                                                             `Medicaid`='Other')))
+```
+
+#### Non-SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & neonate))
+```
+
+
+### Illness Severity <4 {.tabset}
+
+```{R, eval=FALSE}
+tab outcome insurance3 if(sev_all_max_int<4 & fin_small_rural==1 & pr_score_cut_70==0), row
+tab outcome insurance3 if(sev_all_max_int<4 & fin_small_rural==1 & pr_score_cut_70==1), row
+```
+
+#### SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & sev.all.max.int<4))
+```
+
+#### Non-SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & sev.all.max.int<4))
+```
+
+
+### Age  <14 {.tabset}
+
+#### SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & age_exact<14))
+```
+
+#### Non-SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>%  filter(!fin.small_rural & age_exact<14))
+```
+
+
+### Excluding pediatric bed license{.tabset}
+
+#### SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & !hf.has_ped_bed_lic))
+```
+
+#### Non-SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & !hf.has_ped_bed_lic))
+```
+
+
+### CAH {.tabset}
+
+#### SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & cah))
+```
+
+#### Non-SR
+
+```{r}
+stata("
+
+/*overall*/
+melogit transferred i.pr_score_cut_70, or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+
+/* discharge as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=1), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if ( outcome!=1), or || oshpd_id:
+
+/* admitted as outcome*/
+melogit transferred i.pr_score_cut_70 if (outcome!=2), or || oshpd_id:
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic if (outcome!=2), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & cah))
+```
+
+## Diagnoses categories
+
+### SR
+
+```{r}
+
+# Respiratory
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & ccs_label=='Diseases of the respiratory system'))
+
+# General
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & ccs_label=='Symptoms; signs; and ill-defined conditions and factors influencing health status'))
+
+# Neuro
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & ccs_label=='Diseases of the nervous system and sense organs'))
+
+# Digestive
+
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & ccs_label=='Diseases of the digestive system'))
+
+# Infectious
+
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(fin.small_rural & ccs_label=='Infectious and parasitic diseases'))
+
+```
+
+### Non-SR
+```{r}
+# Respiratory
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & ccs_label=='Diseases of the respiratory system'))
+
+# General
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & ccs_label=='Symptoms; signs; and ill-defined conditions and factors influencing health status'))
+
+# Neuro
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & ccs_label=='Diseases of the nervous system and sense organs'))
+
+# Digestive
+
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & ccs_label=='Diseases of the digestive system'))
+
+# Infectious
+
+stata("
+melogit transferred i.pr_score_cut_70 ib5.age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm i.hf_has_ped_bed_lic, or || oshpd_id:
+      ", 
+  data.in = df_reduced2 %>% filter(!fin.small_rural & ccs_label=='Infectious and parasitic diseases'))
+
+```
+
+
+## SR without hf.ped_bed_lic
+
+```{r}
+stata("
+
+/*unadjusted*/
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1), or
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1)&!missing(sev_all_max_int, sex2, insurance3), or
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1 & outcome !=2), or 
+melogit transferred i.pr_score_cut_70 if (fin_small_rural==1 & outcome!=1), or
+
+/* adjusted*/
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1 & outcome !=2), or || oshpd_id:
+
+melogit transferred i.pr_score_cut_70 ib(last).age_cats4 i.sex2 i.race_group3 ib2.insurance3 i.sev_all_max_int i.has_ccc_any hf_ALL_total_norm hf_medicaid_norm if (fin_small_rural==1 & outcome!=1), or || oshpd_id:
+
+      ", 
+  data.in = df_reduced2)
+```
+
+# Conclusions
